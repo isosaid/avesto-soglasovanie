@@ -82,6 +82,14 @@ function esc(s){return String(s==null?"":s).replace(/[&<>"']/g,function(c){
 function reqTotalCur(r){return (r.items||[]).reduce(function(s,i){return s+(Number(i.qty)||0)*(Number(i.price)||0);},0);}
 function reqTotalTjs(r){return reqTotalCur(r)*(Number(r.rate)||0);}
 function paidSum(c){return (c.payments||[]).reduce(function(s,p){return s+(Number(p.amount)||0);},0);}
+/* Эквивалент в сомони берём по курсу самой оплаты, а не по курсу заявки:
+   курс выделения и курс платежа различаются, иначе итог расходится с реестром. */
+function paidTjs(c){
+  return (c.payments||[]).reduce(function(s,p){
+    var t=Number(p.tjs)||0;
+    return s+(t||(Number(p.amount)||0)*(Number(p.rate)||Number(c.rate)||0));
+  },0);
+}
 function balance(c){return (Number(c.invoice)||0)-paidSum(c);}
 /* Порядок виз свободный: первые четверо подписывают когда угодно,
    ген. директор холдинга утверждает последним — только после остальных. */
@@ -393,7 +401,7 @@ function renderContracts(){
   for(var i=0;i<list.length;i++) if(list[i].id===S.selCon)sel=list[i];
   if(!sel)sel=list[0]||null;
   if(sel)S.selCon=sel.id;
-  var totalTjs=list.reduce(function(s,c){return s+paidSum(c)*(Number(c.rate)||0);},0);
+  var totalTjs=list.reduce(function(s,c){return s+paidTjs(c);},0);
   return '<div class="cols"><div class="panel">'+
     '<div class="head"><h2>Шартномаҳо</h2><span class="count">'+list.length+"</span></div>"+
     (list.length?'<ul class="list">'+list.map(function(c){return conRow(c,sel);}).join("")+"</ul>":
@@ -421,8 +429,9 @@ function conDoc(c){
   var linked=S.requests.filter(function(r){return r.contractId===c.id;});
   return '<div class="panel doc"><div class="dhead"><div class="t"><h2>Шартномаи № '+esc(c.no||"—")+"</h2>"+
     '<div class="sub">'+esc(c.supplier||"")+" · "+esc(c.country||"")+" · "+dTj(c.date)+"</div></div>"+
-    '<span class="badge '+(bal<=0.0001&&inv>0?"approved":"review")+'">'+
-    (bal<=0.0001&&inv>0?"Пурра пардохт":"Бақия "+nf(bal,0)+" "+esc(c.currency||""))+"</span></div>"+
+    '<span class="badge '+(bal<-0.0001?"rejected":(bal<=0.0001&&inv>0?"approved":"review"))+'">'+
+    (bal<-0.0001?"Зиёдпардохт "+nf(-bal,0)+" "+esc(c.currency||"")
+      :(bal<=0.0001&&inv>0?"Пурра пардохт":"Бақия "+nf(bal,0)+" "+esc(c.currency||"")))+"</span></div>"+
     "<section><h3>Маълумот · реквизиты</h3>"+
     '<dl class="kv"><div><dt>Объекти дахлдор</dt><dd>'+esc(c.object||"—")+"</dd></div>"+
     "<div><dt>Маҳсулот</dt><dd>"+esc(c.product||"—")+"</dd></div>"+
@@ -441,7 +450,7 @@ function conDoc(c){
     '<dl class="kv" style="margin-top:16px"><div><dt>Пардохтшуда</dt><dd class="num">'+money(pd,c.currency)+"</dd></div>"+
     '<div><dt>Бақия барои пардохт</dt><dd class="num" style="color:'+(bal>0.0001?"var(--wait)":"var(--ok)")+'">'+
     money(bal,c.currency)+"</dd></div>"+
-    '<div><dt>Эквиваленти сомонӣ</dt><dd class="num">'+nf(pd*(Number(c.rate)||0),2)+"</dd></div></dl>"+
+    '<div><dt>Эквиваленти сомонӣ</dt><dd class="num">'+nf(paidTjs(c),2)+"</dd></div></dl>"+
     '<div class="bar" style="margin-top:12px;height:9px"><i style="width:'+(inv?Math.min(100,pd/inv*100).toFixed(1):0)+'%"></i></div></section>'+
     "<section><h3>Дархостҳои вобаста · связанные заявки</h3>"+
     (linked.length?'<div class="paylist">'+linked.map(function(r){
