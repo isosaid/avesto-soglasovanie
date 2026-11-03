@@ -6,7 +6,11 @@
 
 var CFG = window.AVESTO_CONFIG || {};
 var API = String(CFG.API_URL || "").trim();
-var OFFLINE = !API;
+var SHEET = String(CFG.SHEET_ID || "").trim();
+/* три режима: полный (есть API), только чтение таблицы (есть SHEET_ID),
+   автономный (нет ни того, ни другого — данные в этом браузере) */
+var READONLY = !API && !!SHEET;
+var OFFLINE = !API && !SHEET;
 
 /* ─── маршрут по умолчанию (пока справочник не пришёл с сервера) ─── */
 var DEFAULT_SIGNERS = [
@@ -186,10 +190,12 @@ function applyState(d){
 }
 function reload(){
   if(OFFLINE){localLoad();S.loaded=true;render();return Promise.resolve();}
-  return apiGet().then(function(d){applyState(d);render();})
+  var p = API ? apiGet() : loadFromSheet(SHEET);
+  return p.then(function(d){applyState(d);render();})
     .catch(function(e){S.loaded=true;S.error=e.message||String(e);render();});
 }
 function send(action,payload,okMsg){
+  if(READONLY){toast("Режими танҳо дидан · режим только просмотра: запись в таблицу не подключена",true);return Promise.reject();}
   if(OFFLINE){toast("Базаи маълумот пайваст нашуд · база не подключена",true);return Promise.reject();}
   S.busy=true;render();
   return apiPost(action,payload).then(function(j){
@@ -211,7 +217,7 @@ function cachePin(role,pin){ssSet("avesto.pin."+role,pin);}
 /* ═══ рендер ═══ */
 var view=document.getElementById("view");
 function render(){
-  view.innerHTML=(OFFLINE?offlineNotice():"")+(S.error?errorNotice():"")+
+  view.innerHTML=(OFFLINE?offlineNotice():(READONLY?readonlyNotice():""))+(S.error?errorNotice():"")+
     (S.tab==="requests"?renderRequests():renderContracts());
   wire();
   var btn=document.getElementById("meBtn");
@@ -221,8 +227,13 @@ function render(){
 }
 function offlineNotice(){
   return '<div class="notice"><span>⚠</span><span><b>База не подключена.</b> '+
-    'Записи сохраняются только в этом браузере и другим подписантам не видны. '+
-    'Укажите адрес веб-приложения в <code>assets/config.js</code> — инструкция в README репозитория.</span></div>';
+    'Данные видны только в этом браузере. Загрузите реестр кнопкой <b>«Импорт Excel»</b> '+
+    'или пропишите таблицу в <code>assets/config.js</code> — инструкция в README.</span></div>';
+}
+function readonlyNotice(){
+  return '<div class="notice"><span>👁</span><span><b>Режим просмотра.</b> '+
+    'Данные читаются прямо из таблицы Google Sheets. Визы и платежи записывать нельзя — '+
+    'для этого нужно развернуть веб-приложение Apps Script и указать его адрес в <code>config.js</code>.</span></div>';
 }
 function errorNotice(){
   return '<div class="notice bad"><span>✕</span><span><b>Сервер недоступен.</b> '+esc(S.error)+
@@ -486,6 +497,11 @@ document.getElementById("tabs").onclick=function(e){
 };
 document.getElementById("meBtn").onclick=pickRole;
 document.getElementById("reloadBtn").onclick=function(){reload();};
+document.getElementById("importBtn").onclick=openImport;
+document.getElementById("xlsxInput").onchange=function(e){
+  handleFile(e.target.files&&e.target.files[0]);
+  e.target.value="";
+};
 
 function findReq(id){for(var i=0;i<S.requests.length;i++)if(S.requests[i].id===id)return S.requests[i];return null;}
 function findCon(id){for(var i=0;i<S.contracts.length;i++)if(S.contracts[i].id===id)return S.contracts[i];return null;}
@@ -738,6 +754,279 @@ function toast(msg,bad){
   h.innerHTML='<div class="toast'+(bad?" bad":"")+'">'+esc(msg)+"</div>";
   clearTimeout(toastT);
   toastT=setTimeout(function(){h.innerHTML="";},bad?6000:3600);
+}
+
+/* ═══ импорт реестра из Excel ═══
+   Структура файла «Мархилаи-2»: строка заголовков с «Номи Ташкилоти
+   интиколдиханда», под ней два ряда подзаголовков, затем данные.
+   Колонки ищем по названиям, а не по буквам — в разных версиях файла
+   они сдвинуты. Первый «Курс» — курс заявки, последний — курс оплаты,
+   по которому реально прошёл платёж. */
+function cellText(v){ return v==null?"":String(v).replace(/\s+/g," ").trim(); }
+function cellNum(v){
+  if(v==null||v==="")return 0;
+  if(typeof v==="number")return v;
+  var s=String(v).replace(/\s| /g,"").replace(",",".").replace(/[^\d.\-]/g,"");
+  var n=parseFloat(s);
+  return isNaN(n)?0:n;
+}
+function excelDate(v){
+  if(v==null||v==="")return "";
+  if(v instanceof Date)return v.toISOString().slice(0,10);
+  if(typeof v==="number"&&v>20000&&v<80000){
+    var d=new Date(Date.UTC(1899,11,30+Math.floor(v)));
+    return d.toISOString().slice(0,10);
+  }
+  var s=cellText(v);
+  var m=s.match(/(\d{2})[.\/](\d{2})[.\/](\d{4})/);
+  if(m)return m[3]+"-"+m[2]+"-"+m[1];
+  if(/^\d{4}-\d{2}-\d{2}/.test(s))return s.slice(0,10);
+  return "";
+}
+function findCol(hdr,needle){
+  for(var i=0;i<hdr.length;i++){
+    var t=cellText(hdr[i]).toLowerCase();
+    if(t&&t.indexOf(needle.toLowerCase())>-1)return i;
+  }
+  return -1;
+}
+function allCols(hdr,needle){
+  var out=[];
+  for(var i=0;i<hdr.length;i++){
+    var t=cellText(hdr[i]).toLowerCase();
+    if(t&&t.indexOf(needle.toLowerCase())>-1)out.push(i);
+  }
+  return out;
+}
+function parseRegistry(wb){
+  var best=null;
+  wb.SheetNames.forEach(function(name){
+    var rows=XLSX.utils.sheet_to_json(wb.Sheets[name],{header:1,raw:true,defval:null});
+    var hdr=-1;
+    for(var i=0;i<Math.min(rows.length,15);i++){
+      if(findCol(rows[i]||[],"номи ташкилоти")>-1){hdr=i;break;}
+    }
+    if(hdr<0)return;
+    var r=readSheet(rows,hdr,name);
+    if(r&&(!best||r.contracts.length>best.contracts.length))best=r;
+  });
+  return best;
+}
+function readSheet(rows,hdr,sheetName){
+  var H=rows[hdr]||[], sub=rows[hdr+2]||[];
+  var ci={
+    date:findCol(H,"сана"), supplier:findCol(H,"номи ташкилоти"), country:findCol(H,"давлати"),
+    no:findCol(H,"шартнома"), object:findCol(H,"объекти"), product:findCol(H,"номи махсулоти"),
+    cur:findCol(H,"асъор"), invoice:findCol(H,"инвойс")
+  };
+  if(ci.supplier<0||ci.invoice<0)return null;
+  /* «Курс» встречается и в шапке, и в ряду подзаголовков: первый по счёту —
+     курс заявки, последний — курс, по которому деньги реально выделены. */
+  var rates=allCols(H,"курс").concat(allCols(sub,"курс")).sort(function(a,b){return a-b;});
+  var rateCol=rates.length?rates[0]:-1;
+  var payRateCol=rates.length>1?rates[rates.length-1]:rateCol;
+
+  // группа фактических оплат
+  var payStart=-1;
+  for(var i=0;i<H.length;i++){
+    var t=cellText(H[i]).toLowerCase();
+    if(t&&(t.indexOf("фактическая оплата")>-1||t.indexOf("факт оплата")>-1)){payStart=i;break;}
+  }
+  var payEnd=H.length;
+  if(payStart>-1){
+    for(var j=payStart+1;j<H.length;j++){ if(cellText(H[j])){payEnd=j;break;} }
+  }
+  var pairs=[];
+  if(payStart>-1){
+    var pending=-1;
+    for(var k=payStart;k<payEnd;k++){
+      var s=cellText(sub[k]).toLowerCase();
+      if(s.indexOf("дата")>-1)pending=k;
+      else if(s.indexOf("сумма")>-1&&pending>-1){pairs.push([pending,k]);pending=-1;}
+    }
+  }
+
+  /* Начало данных ищем, а не отсчитываем: в одних версиях файла под шапкой
+     два ряда подзаголовков, в других строки идут сразу. */
+  var start=-1;
+  for(var si=hdr+1;si<Math.min(rows.length,hdr+7);si++){
+    var rr=rows[si]||[];
+    if(cellText(rr[ci.supplier])&&cellNum(rr[ci.invoice])>0){start=si;break;}
+  }
+  if(start<0)start=hdr+3;
+
+  var contracts=[],payments=[],skipped=0;
+  for(var rI=start;rI<rows.length;rI++){
+    var row=rows[rI]||[];
+    var sup=cellText(row[ci.supplier]);
+    var first=cellText(row[0]).toLowerCase();
+    if(first.indexOf("итог")>-1)break;
+    var inv=cellNum(row[ci.invoice]);
+    if(!sup){ if(inv)skipped++; continue; }
+    if(/^(свод|заявка|выделено|остаток|основные|строител)/i.test(sup))continue;
+    var num=cellText(row[0]).replace(/\D/g,"");
+    var cid="c-"+(num?("00"+num).slice(-2):String(contracts.length+1));
+    var rate=rateCol>-1?cellNum(row[rateCol]):1; if(!rate)rate=1;
+    var rp=payRateCol>-1?cellNum(row[payRateCol]):rate; if(!rp)rp=rate;
+    contracts.push({
+      id:cid, no:cellText(row[ci.no])||"—", date:excelDate(row[ci.date]),
+      supplier:sup, country:cellText(row[ci.country]), object:cellText(row[ci.object]),
+      product:cellText(row[ci.product]), currency:cellText(row[ci.cur])||"—",
+      rate:rate, bank:"", invoice:inv, gtd:"", file:"", payments:[]
+    });
+    var c=contracts[contracts.length-1], n=0;
+    pairs.forEach(function(p){
+      var am=cellNum(row[p[1]]);
+      if(!am)return;
+      n++;
+      c.payments.push({amount:am, date:excelDate(row[p[0]]), rate:rp,
+                       tjs:Math.round(am*rp*100)/100, note:"Пардохти "+n});
+    });
+    payments.push.apply(payments,c.payments);
+  }
+  return {sheet:sheetName, contracts:contracts, payments:payments, skipped:skipped};
+}
+
+function openImport(){
+  document.getElementById("xlsxInput").click();
+}
+function handleFile(file){
+  if(!file)return;
+  if(typeof XLSX==="undefined"){toast("Модули хониши Excel бор нашуд · не загрузился модуль чтения Excel",true);return;}
+  var fr=new FileReader();
+  fr.onerror=function(){toast("Файлро хондан нашуд · не удалось прочитать файл",true);};
+  fr.onload=function(e){
+    var parsed;
+    try{
+      var wb=XLSX.read(new Uint8Array(e.target.result),{type:"array",cellDates:true});
+      parsed=parseRegistry(wb);
+    }catch(err){ toast("Файл хонда нашуд: "+(err.message||err),true); return; }
+    if(!parsed||!parsed.contracts.length){
+      toast("Дар файл реестр ёфт нашуд · в файле не найден реестр контрактов",true);
+      return;
+    }
+    previewImport(parsed,file.name);
+  };
+  fr.readAsArrayBuffer(file);
+}
+function previewImport(p,fname){
+  var byCur={};
+  p.contracts.forEach(function(c){
+    var k=c.currency||"—";
+    byCur[k]=byCur[k]||{inv:0,paid:0,n:0};
+    byCur[k].inv+=Number(c.invoice)||0;
+    byCur[k].paid+=paidSum(c);
+    byCur[k].n++;
+  });
+  var rowsHtml=Object.keys(byCur).map(function(k){
+    var g=byCur[k];
+    return "<tr><td>"+esc(k)+'</td><td class="r num">'+g.n+'</td><td class="r num">'+nf(g.inv,2)+
+      '</td><td class="r num">'+nf(g.paid,2)+'</td><td class="r num">'+nf(g.inv-g.paid,2)+"</td></tr>";
+  }).join("");
+  var over=p.contracts.filter(function(c){return paidSum(c)>(Number(c.invoice)||0)+0.5;});
+  modal({
+    title:"Импорт реестра",
+    body:'<p class="hint">Файл: <b>'+esc(fname)+"</b> · лист «"+esc(p.sheet)+"»</p>"+
+      '<div class="tw"><table class="items"><thead><tr><th>Асъор</th><th class="r">Шартнома</th>'+
+      '<th class="r">Инвойс</th><th class="r">Пардохтшуда</th><th class="r">Бақия</th></tr></thead>'+
+      "<tbody>"+rowsHtml+"</tbody></table></div>"+
+      '<p class="hint">Распознано: <b>'+p.contracts.length+"</b> контрактов и <b>"+
+      p.payments.length+"</b> фактических платежей."+
+      (p.skipped?" Пропущено строк без поставщика: "+p.skipped+".":"")+"</p>"+
+      (over.length?'<div class="notice" style="margin:0"><span>⚠</span><span>Переплата по '+over.length+
+        " контракту(ам): "+esc(over.map(function(c){return c.supplier;}).slice(0,3).join(", "))+
+        (over.length>3?" и др.":"")+"</span></div>":"")+
+      '<div><label class="f">Что сделать с текущими данными</label>'+
+      '<select id="impMode"><option value="replace">Заменить реестр целиком</option>'+
+      '<option value="merge">Добавить и обновить по номеру контракта</option></select></div>'+
+      (OFFLINE?'<p class="hint">База не подключена — данные сохранятся в этом браузере.</p>'
+              :'<p class="hint">Данные будут записаны в таблицу Google Sheets.</p>'),
+    okText:"Импорт",
+    onOk:function(root){
+      var mode=root.querySelector("#impMode").value;
+      applyImport(p,mode);
+    }
+  });
+}
+function applyImport(p,mode){
+  var next;
+  if(mode==="replace")next=p.contracts.slice();
+  else{
+    next=S.contracts.slice();
+    p.contracts.forEach(function(c){
+      var i=-1;
+      for(var j=0;j<next.length;j++)
+        if(next[j].no&&c.no&&next[j].no===c.no&&next[j].supplier===c.supplier){i=j;break;}
+      if(i>=0)next[i]=c; else next.push(c);
+    });
+  }
+  if(!API){
+    S.contracts=next; localSave(); render();
+    toast("Импорт шуд: "+p.contracts.length+" шартнома"+(READONLY?" (танҳо дар ин браузер)":""));
+    return;
+  }
+  send("importRegistry",{contracts:next},"Импорт шуд: "+p.contracts.length+" шартнома");
+}
+
+/* ═══ чтение опубликованной таблицы (без Apps Script) ═══ */
+function csvUrl(id,sheet){
+  return "https://docs.google.com/spreadsheets/d/"+encodeURIComponent(id)+
+         "/gviz/tq?tqx=out:csv&sheet="+encodeURIComponent(sheet);
+}
+function parseCsv(text){
+  var rows=[],row=[],cur="",q=false;
+  for(var i=0;i<text.length;i++){
+    var ch=text[i];
+    if(q){
+      if(ch==='"'){ if(text[i+1]==='"'){cur+='"';i++;} else q=false; }
+      else cur+=ch;
+    }else if(ch==='"')q=true;
+    else if(ch===","){row.push(cur);cur="";}
+    else if(ch==="\n"){row.push(cur);rows.push(row);row=[];cur="";}
+    else if(ch!=="\r")cur+=ch;
+  }
+  if(cur!==""||row.length){row.push(cur);rows.push(row);}
+  return rows;
+}
+function objects(rows){
+  if(!rows.length)return [];
+  var h=rows[0].map(function(x){return String(x).trim();});
+  return rows.slice(1).filter(function(r){return r.join("").trim()!=="";}).map(function(r){
+    var o={};
+    h.forEach(function(k,i){o[k]=r[i]!==undefined?r[i]:"";});
+    return o;
+  });
+}
+function loadFromSheet(id){
+  var names=["Шартномаҳо","Пардохтҳо","Дархостҳо","Сатрҳо","Имзоҳо","Имзокунандагон"];
+  return Promise.all(names.map(function(n){
+    return fetch(csvUrl(id,n)).then(function(r){
+      if(!r.ok)throw new Error("лист «"+n+"» недоступен ("+r.status+")");
+      return r.text();
+    }).then(function(t){return objects(parseCsv(t));});
+  })).then(function(res){
+    var contracts=res[0],pays=res[1],reqs=res[2],items=res[3],apprs=res[4],signers=res[5];
+    contracts.forEach(function(c){
+      c.rate=Number(c.rate)||0; c.invoice=Number(c.invoice)||0;
+      c.payments=pays.filter(function(p){return p.contractId===c.id;}).map(function(p){
+        return {amount:Number(p.amount)||0,date:p.date,rate:Number(p.rate)||0,
+                tjs:Number(p.tjs)||0,note:p.note,requestId:p.requestId};
+      });
+    });
+    reqs.forEach(function(r){
+      r.rate=Number(r.rate)||0;
+      r.items=items.filter(function(i){return i.requestId===r.id;}).map(function(i){
+        return {name:i.name,unit:i.unit,qty:Number(i.qty)||0,price:Number(i.price)||0};
+      });
+      r.approvals={};
+      apprs.filter(function(a){return a.requestId===r.id;}).forEach(function(a){
+        r.approvals[a.roleKey]={decision:a.decision,at:a.at,byName:a.byName,comment:a.comment};
+      });
+    });
+    return {contracts:contracts,requests:reqs,
+            signers:signers.filter(function(s){return s.key;}).sort(function(a,b){
+              return (Number(a.order)||0)-(Number(b.order)||0);})};
+  });
 }
 
 /* ═══ запуск ═══ */

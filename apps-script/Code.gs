@@ -55,6 +55,7 @@ function doPost(e) {
       case 'decide':        out = decide(p); break;
       case 'markPaid':      out = markPaid(p); break;
       case 'deleteRequest': out = deleteRequest(p); break;
+      case 'importRegistry': out = importRegistry(p); break;
       default: throw new Error('Амали номаълум · неизвестное действие: ' + action);
     }
     return json({ok: true, data: out, state: bootstrap()});
@@ -346,6 +347,42 @@ function deleteRequest(p) {
   var row = rowIndexById('requests', r.id);
   if (row > 0) sh.deleteRow(row);
   return {deleted: r.id};
+}
+
+/**
+ * Импорт реестра из Excel: сайт разбирает файл в браузере и присылает
+ * готовые контракты с платежами. Листы «Шартномаҳо» и «Пардохтҳо»
+ * перезаписываются целиком; заявки, визы и подписанты не трогаются.
+ */
+function importRegistry(p) {
+  var list = p.contracts || [];
+  if (!list.length) throw new Error('Рӯйхат холӣ · список контрактов пуст');
+
+  var shC = sheet('contracts'), shP = sheet('payments');
+  if (shC.getLastRow() > 1) shC.getRange(2, 1, shC.getLastRow() - 1, COLS.contracts.length).clearContent();
+  if (shP.getLastRow() > 1) shP.getRange(2, 1, shP.getLastRow() - 1, COLS.payments.length).clearContent();
+
+  var crows = [], prows = [], pn = 0;
+  list.forEach(function (c) {
+    var cid = c.id || uid('c');
+    crows.push(toRow('contracts', {
+      id: cid, no: c.no || '', date: c.date || '', supplier: c.supplier || '',
+      country: c.country || '', object: c.object || '', product: c.product || '',
+      currency: c.currency || '', rate: Number(c.rate) || 0, bank: c.bank || '',
+      invoice: Number(c.invoice) || 0, gtd: c.gtd || '', file: c.file || ''
+    }));
+    (c.payments || []).forEach(function (q) {
+      pn++;
+      prows.push(toRow('payments', {
+        id: 'p' + pn + '-' + cid, contractId: cid, amount: Number(q.amount) || 0,
+        date: q.date || '', rate: Number(q.rate) || 0, tjs: Number(q.tjs) || 0,
+        note: q.note || '', requestId: q.requestId || ''
+      }));
+    });
+  });
+  if (crows.length) shC.getRange(2, 1, crows.length, COLS.contracts.length).setValues(crows);
+  if (prows.length) shP.getRange(2, 1, prows.length, COLS.payments.length).setValues(prows);
+  return {contracts: crows.length, payments: prows.length};
 }
 
 /* ───────────────── первичная настройка таблицы ─────────────────

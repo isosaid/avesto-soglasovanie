@@ -24,9 +24,11 @@
       <button type="button" role="tab" data-tab="contracts" aria-selected="false">Шартномаҳо</button>
     </nav>
     <div class="tools">
+      <button type="button" id="importBtn" title="Загрузить реестр из файла Excel">Импорт Excel</button>
       <button type="button" id="reloadBtn" title="Навсозӣ · обновить данные">↻</button>
       <button type="button" id="meBtn" title="Выбрать должность">Кто вы?</button>
     </div>
+    <input type="file" id="xlsxInput" accept=".xlsx,.xlsm,.xls" hidden>
   </div>
 </header>
 
@@ -43,6 +45,7 @@
 <div id="modalHost"></div>
 <div id="toastHost"></div>
 
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <script src="assets/config.js"></script>
 <script src="assets/app.js"></script>
 </body>
