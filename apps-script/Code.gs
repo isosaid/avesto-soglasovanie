@@ -135,7 +135,8 @@ function toRow(key, obj) {
 
 function upsert(key, obj) {
   var sh = sheet(key);
-  var r = rowIndexById(key, obj.id);
+  // Опознаём строку по первой колонке листа: у подписантов это «key», у остальных «id».
+  var r = rowIndexById(key, obj[COLS[key][0]]);
   var row = toRow(key, obj);
   if (r > 0) sh.getRange(r, 1, 1, row.length).setValues([row]);
   else sh.appendRow(row);
@@ -198,8 +199,16 @@ function bootstrap() {
       });
   });
 
-  // Пароль наружу не отдаём — только признак, что он задан
+  // Пароль наружу не отдаём — только признак, что он задан.
+  // Повторы по key отбрасываем: один подписант — один шаг маршрута.
+  var seen = {};
   var publicSigners = signers
+    .filter(function (s) {
+      var k = String(s.key || '').trim();
+      if (!k || seen[k]) return false;
+      seen[k] = true;
+      return true;
+    })
     .sort(function (a, b) { return (Number(a.order) || 0) - (Number(b.order) || 0); })
     .map(function (s) {
       return {key: s.key, posTj: s.posTj, posRu: s.posRu, name: s.name,
