@@ -1,4 +1,4 @@
-/* Мувофиқасозии дархостҳо — клиентская часть.
+/* Бюджети сармоягузорӣ — клиентская часть.
    Данные: Google Sheets через веб-приложение Apps Script (см. config.js).
    Разработано Отделом автоматизации холдинга ООО «Авесто Групп» · ISJ */
 (function () {
@@ -11,6 +11,60 @@ var SHEET = String(CFG.SHEET_ID || "").trim();
    автономный (нет ни того, ни другого — данные в этом браузере) */
 var READONLY = !API && !!SHEET;
 var OFFLINE = !API && !SHEET;
+
+/* ─── юрлица и проекты холдинга: выбор организации в заявке и фильтр списка ─── */
+var COMPANIES = [
+  'ООО "Филиззот"',
+  'ОАО "Азот"',
+  'ООО "КМ Муосир"',
+  'ООО "Авесто Групп"',
+  "NERU",
+  'ООО "Мармари"',
+  'ООО "Арвис"',
+  'ОАО "Гулистони Душанбе"',
+  'ООО "Комбинати орди Душанбе"',
+  'ТСРЦ "Сиёма Молл"',
+  'ООО "Нет Солюшенс"',
+  'ООО "Артел Авесто Электроникс"',
+  'ООО "Душанбе Сити Банк"',
+  'ПП "Сиёма"',
+  'ООО "Акиа Авесто Автоматив Индастри"',
+  'ООО МДО "Доро Молия"',
+  'ООО "Таком"',
+  'ООО "Олуча Авто"',
+  'Проект "Сити Кард"',
+  'ООО "Джура-такси"',
+  'ООО "Композит Т.А."',
+  'Проект "Сити Лайн"',
+  'ООО "Чилтан"',
+  "IMEI",
+  'ООО "ДС Маркет"',
+  'ООО МДО "Пайванд Групп"',
+  'ООО "Строй-центр"',
+  'ООО "Тоджик-мобайл"',
+  'ООО "Осие Кемикал"',
+  'ООО "Форум Душанбе"',
+  'ООО "Асим"',
+  'ЗАО "Душанбе Сити Банк" Кубодиён',
+  "IT Park",
+  "Барки Точик (проект)",
+  'ООО "Зарфон"',
+  "Центр управления платежами",
+  "Служба связи",
+  "Яккитория, HUA",
+  'ООО "Баракат 2013"',
+  'ООО "Сити Сервис ЛТД"'
+];
+/* Выпадающий список организаций; если в заявке стоит название не из списка
+   (старые записи, импорт из Excel) — добавляем его первым, чтобы не потерять. */
+function companyOptions(cur){
+  var list=COMPANIES.slice();
+  var v=String(cur||"").trim();
+  if(v&&list.indexOf(v)<0)list.unshift(v);
+  return list.map(function(c){
+    return '<option value="'+esc(c)+'"'+(c===v?" selected":"")+">"+esc(c)+"</option>";
+  }).join("");
+}
 
 /* ─── маршрут по умолчанию (пока справочник не пришёл с сервера) ─── */
 var DEFAULT_SIGNERS = [
@@ -146,7 +200,7 @@ var S={
   tab:"requests", filter:"all",
   contracts:[], requests:[], signers:DEFAULT_SIGNERS.slice(),
   selReq:null, selCon:null, sheetFor:null,
-  q:"", cur:"all", rest:"all", conMode:"cards",
+  q:"", cur:"all", rest:"all", comp:"all", conMode:"cards",
   session:null, me:null, busy:false, loaded:false, error:null, gateErr:null
 };
 function lsGet(k){try{return localStorage.getItem(k);}catch(e){return null;}}
@@ -299,7 +353,7 @@ function renderGate(){
       "в одном браузере. На рабочем сайте вход по логину и паролю.</p>";
   return '<div class="gatewrap"><form class="gatecard" autocomplete="on" onsubmit="return false">'+
     '<div class="gatehead"><div class="seal">А</div>'+
-    "<h1>Мувофиқасозии дархостҳо</h1>"+
+    "<h1>Бюджети сармоягузорӣ</h1>"+
     "<p>ҶДММ «Авесто Гуруҳ» · согласование заявок на оплату</p></div>"+
     (S.gateErr?'<div class="gateerr">'+esc(S.gateErr)+"</div>":"")+
     body+"</form></div>";
@@ -355,7 +409,18 @@ function errorNotice(){
 
 function renderRequests(){
   var list=S.requests.slice().sort(function(a,b){return String(b.date||"").localeCompare(String(a.date||""));});
-  var shown=list.filter(function(r){return S.filter==="all"||derivedStatus(r)===S.filter;});
+  var shown=list.filter(function(r){
+    if(S.filter!=="all"&&derivedStatus(r)!==S.filter)return false;
+    if(S.comp!=="all"&&String(r.company||"")!==S.comp)return false;
+    return true;
+  });
+  /* в выпадающем фильтре — только те организации, по которым заявки есть */
+  var used=[];
+  list.forEach(function(r){
+    var c=String(r.company||"").trim();
+    if(c&&used.indexOf(c)<0)used.push(c);
+  });
+  used.sort(function(a,b){return a.localeCompare(b,"ru");});
   var sel=null;
   for(var i=0;i<shown.length;i++) if(shown[i].id===S.selReq)sel=shown[i];
   if(!sel)sel=shown[0]||null;
@@ -368,6 +433,11 @@ function renderRequests(){
     '<div class="filters">'+fdefs.map(function(f){
       return '<button data-filter="'+f[0]+'" aria-pressed="'+(S.filter===f[0])+'">'+f[1]+"</button>";
     }).join("")+"</div>"+
+    (used.length>1?'<div class="compfilter"><select id="compSel" aria-label="Ташкилот · организация">'+
+      '<option value="all"'+(S.comp==="all"?" selected":"")+">Ҳама ташкилотҳо · все организации</option>"+
+      used.map(function(c){
+        return '<option value="'+esc(c)+'"'+(S.comp===c?" selected":"")+">"+esc(c)+"</option>";
+      }).join("")+"</select></div>":"")+
     (shown.length?'<ul class="list">'+shown.map(function(r){return reqRow(r,sel);}).join("")+"</ul>":
       '<div class="empty"><h3>Дархост нест</h3><p>'+
       (S.loaded?"По этому фильтру заявок нет.":'<span class="spin"></span> Маълумот бор мешавад…')+"</p></div>")+
@@ -693,6 +763,8 @@ function wire(){
   var i,els;
   els=view.querySelectorAll("[data-filter]");
   for(i=0;i<els.length;i++)(function(b){b.onclick=function(){S.filter=b.dataset.filter;render();};})(els[i]);
+  var cs=document.getElementById("compSel");
+  if(cs)cs.onchange=function(){S.comp=cs.value;S.selReq=null;render();};
   els=view.querySelectorAll("[data-req]");
   for(i=0;i<els.length;i++)(function(b){b.onclick=function(){S.selReq=b.dataset.req;S.sheetFor=null;render();};})(els[i]);
   els=view.querySelectorAll("[data-con]");
@@ -824,7 +896,7 @@ function editRequest(r){
     body:'<div class="fgrid">'+
       '<div><label class="f">Рақам · номер</label><input id="fNum" value="'+esc(d.number)+'" placeholder="01/01"></div>'+
       '<div><label class="f">Сана</label><input id="fDate" type="date" value="'+esc(d.date)+'"></div>'+
-      '<div><label class="f">Ташкилот</label><input id="fComp" value="'+esc(d.company)+'"></div></div>'+
+      '<div><label class="f">Ташкилот</label><select id="fComp">'+companyOptions(d.company)+"</select></div></div>"+
       '<div><label class="f">Шартнома</label><select id="fCon"><option value="">— бе шартнома —</option>'+opts+"</select></div>"+
       '<div class="fgrid"><div><label class="f">Асъор</label><input id="fCur" value="'+esc(d.currency)+'"></div>'+
       '<div><label class="f">Курс, сомонӣ</label><input id="fRate" class="num" value="'+esc(d.rate)+'"></div></div>'+
@@ -863,7 +935,7 @@ function editRequest(r){
     onOk:function(root){
       d.number=root.querySelector("#fNum").value.trim();
       d.date=root.querySelector("#fDate").value;
-      d.company=root.querySelector("#fComp").value.trim();
+      d.company=root.querySelector("#fComp").value;
       d.contractId=root.querySelector("#fCon").value;
       d.currency=root.querySelector("#fCur").value.trim();
       d.rate=Number(root.querySelector("#fRate").value)||0;
