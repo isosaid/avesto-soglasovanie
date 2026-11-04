@@ -147,7 +147,7 @@ var S={
   contracts:[], requests:[], signers:DEFAULT_SIGNERS.slice(),
   selReq:null, selCon:null, sheetFor:null,
   q:"", cur:"all", rest:"all", conMode:"cards",
-  session:null, me:null, busy:false, loaded:false, error:null
+  session:null, me:null, busy:false, loaded:false, error:null, gateErr:null
 };
 function lsGet(k){try{return localStorage.getItem(k);}catch(e){return null;}}
 function lsSet(k,v){try{localStorage.setItem(k,v);}catch(e){}}
@@ -268,13 +268,77 @@ function clearSession(){ try{localStorage.removeItem("avesto.session");}catch(e)
 /* ═══ рендер ═══ */
 var view=document.getElementById("view");
 function render(){
+  var gate=!S.session;                       // до входа — только экран входа
+  document.body.classList.toggle("gate",gate);
+  if(gate){ view.innerHTML=renderGate(); wireGate(); return; }
   view.innerHTML=(OFFLINE?offlineNotice():(READONLY?readonlyNotice():""))+(S.error?errorNotice():"")+
     (S.tab==="requests"?renderRequests():renderContracts());
   wire();
   var btn=document.getElementById("meBtn");
-  var s=S.session&&S.session.role;
-  btn.textContent=s?s.name:"Даромад · войти";
-  btn.title=s?(s.posRu+" — нажмите, чтобы выйти"):"Войти как подписант";
+  var s=S.session.role;
+  btn.textContent=s?s.name:"Баромад · выйти";
+  btn.title=s?(s.posRu+" — смена пароля и выход"):"Выйти";
+}
+
+/* ── первый экран: вход ── */
+function renderGate(){
+  var list=S.signers&&S.signers.length?S.signers:DEFAULT_SIGNERS;
+  var body=API
+    ? '<label class="f" for="gU">Логин</label>'+
+      '<input id="gU" autocomplete="username" placeholder="hakimov" value="'+esc(lsGet("avesto.lastLogin")||"")+'">'+
+      '<label class="f" for="gP" style="margin-top:14px">Рамз · пароль</label>'+
+      '<input id="gP" type="password" autocomplete="current-password">'+
+      '<button class="btn pri wide" id="gIn"'+(S.busy?" disabled":"")+">"+
+      (S.busy?"Санҷиш…":"Даромадан · войти")+"</button>"+
+      '<p class="hint">Логин и пароль выдаёт отдел автоматизации холдинга. '+
+      "После входа визы ставятся сразу — ничего вводить больше не нужно.</p>"
+    : '<label class="f" for="gR">Вазифа · должность</label>'+
+      '<select id="gR">'+list.map(function(r){
+        return '<option value="'+esc(r.key)+'">'+esc(r.name)+" — "+esc(r.posRu)+"</option>";
+      }).join("")+"</select>"+
+      '<button class="btn pri wide" id="gIn">Ворид шудан · войти</button>'+
+      '<p class="hint">База не подключена, поэтому пароль проверять негде: это демонстрация '+
+      "в одном браузере. На рабочем сайте вход по логину и паролю.</p>";
+  return '<div class="gatewrap"><form class="gatecard" autocomplete="on" onsubmit="return false">'+
+    '<div class="gatehead"><div class="seal">А</div>'+
+    "<h1>Мувофиқасозии дархостҳо</h1>"+
+    "<p>ҶДММ «Авесто Гуруҳ» · согласование заявок на оплату</p></div>"+
+    (S.gateErr?'<div class="gateerr">'+esc(S.gateErr)+"</div>":"")+
+    body+"</form></div>";
+}
+function wireGate(){
+  var go=document.getElementById("gIn"); if(!go)return;
+  if(API){
+    var u=document.getElementById("gU"),p=document.getElementById("gP");
+    (u.value?p:u).focus();
+    var onKey=function(e){if(e.key==="Enter"){e.preventDefault();go.click();}};
+    u.onkeydown=onKey; p.onkeydown=onKey;
+    go.onclick=function(){
+      var lg=u.value.trim(),pw=p.value;
+      if(!lg||!pw){S.gateErr="Логин ва рамзро ворид кунед · введите логин и пароль";render();return;}
+      lsSet("avesto.lastLogin",lg);
+      S.gateErr=null; S.busy=true; render();
+      apiPost("login",{login:lg,password:pw}).then(function(j){
+        S.session=j.data; S.me=j.data.role.key; saveSession(S.session);
+        S.busy=false; S.error=null;
+        if(j.state)applyState(j.state); else reload();
+        render(); toast("Хуш омадед, "+j.data.role.name);
+      }).catch(function(e){
+        S.busy=false; S.gateErr=e.message||"Даромад нашуд"; render();
+        var f=document.getElementById("gP"); if(f){f.value="";f.focus();}
+      });
+    };
+  }else{
+    go.onclick=function(){
+      var k=document.getElementById("gR").value,list=S.signers&&S.signers.length?S.signers:DEFAULT_SIGNERS,r=null;
+      for(var i=0;i<list.length;i++)if(list[i].key===k)r=list[i];
+      if(!r)return;
+      S.session={token:"",role:{key:r.key,name:r.name,posRu:r.posRu,posTj:r.posTj,order:r.order}};
+      S.me=r.key; saveSession(S.session);
+      if(S.loaded)render(); else reload();
+      toast("Хуш омадед, "+r.name);
+    };
+  }
 }
 function offlineNotice(){
   return '<div class="notice"><span>⚠</span><span><b>База не подключена.</b> '+
@@ -673,7 +737,7 @@ document.getElementById("tabs").onclick=function(e){
   render();
 };
 document.getElementById("meBtn").onclick=function(){
-  if(S.session)doLogout(); else openLogin();
+  if(S.session)openAccount(); else openLogin();
 };
 document.getElementById("reloadBtn").onclick=function(){reload();};
 document.getElementById("importBtn").onclick=openImport;
@@ -927,66 +991,63 @@ function editContract(c){
 
 /* ── выбор роли ── */
 function openLogin(note){
-  if(!API){openLocalRole();return;}
+  S.session=null; S.me=null; clearSession();
+  S.gateErr=note||null; render();
+}
+
+/* ── личный кабинет: смена пароля и выход ── */
+function openAccount(){
+  var r=S.session&&S.session.role; if(!r)return;
   modal({
-    title:"Даромад ба система · вход",
-    body:(note?'<div class="notice" style="margin:0"><span>!</span><span>'+esc(note)+"</span></div>":"")+
-      '<div><label class="f">Логин</label><input id="lgU" autocomplete="username" '+
-      'placeholder="hakimov" value="'+esc(lsGet("avesto.lastLogin")||"")+'"></div>'+
-      '<div><label class="f">Рамз · пароль</label><input id="lgP" type="password" '+
-      'autocomplete="current-password"></div>'+
-      '<p class="hint">Логин и пароль выдаёт отдел автоматизации. '+
-      "После входа визы ставятся сразу — ничего вводить больше не нужно.</p>",
-    okText:"Даромадан",
-    onOpen:function(root){
-      var u=root.querySelector("#lgU"), p=root.querySelector("#lgP");
-      (u.value?p:u).focus();
-      p.onkeydown=function(e){if(e.key==="Enter")root.parentNode.querySelector('[data-x="o"]').click();};
-    },
+    title:"Ҳисоби корбар · учётная запись",
+    body:'<div class="acc"><b>'+esc(r.name)+"</b><span>"+esc(r.posRu)+"</span>"+
+      (r.posTj?"<span>"+esc(r.posTj)+"</span>":"")+"</div>"+
+      (API?'<button class="btn wide" id="acPw" type="button">Иваз кардани рамз · сменить пароль</button>':"")+
+      '<button class="btn wide dang" id="acOut" type="button">Баромадан · выйти</button>',
+    okText:"Пӯшидан",
+    noCancel:true,
+    onOpen:function(root,close){
+      var pw=root.querySelector("#acPw");
+      if(pw)pw.onclick=function(){close();openChangePassword();};
+      root.querySelector("#acOut").onclick=function(){close();doLogout();};
+    }
+  });
+}
+
+function openChangePassword(){
+  modal({
+    title:"Иваз кардани рамз · смена пароля",
+    body:'<div><label class="f">Рамзи ҳозира · текущий пароль</label>'+
+      '<input id="cpOld" type="password" autocomplete="current-password"></div>'+
+      '<div><label class="f">Рамзи нав · новый пароль</label>'+
+      '<input id="cpNew" type="password" autocomplete="new-password"></div>'+
+      '<div><label class="f">Такрори рамзи нав · ещё раз</label>'+
+      '<input id="cpNew2" type="password" autocomplete="new-password"></div>'+
+      '<p class="hint">Не короче 6 символов. Новый пароль сразу заменит старый в таблице — '+
+      "запомните его: прочитать пароль там уже нельзя. Входы с других устройств закроются.</p>",
+    okText:"Нигоҳ доштан",
+    onOpen:function(root){root.querySelector("#cpOld").focus();},
     onOk:function(root){
-      var u=root.querySelector("#lgU").value.trim();
-      var p=root.querySelector("#lgP").value;
-      if(!u||!p){toast("Логин ва рамзро ворид кунед",true);return false;}
-      lsSet("avesto.lastLogin",u);
+      var o=root.querySelector("#cpOld").value,
+          n=root.querySelector("#cpNew").value,
+          n2=root.querySelector("#cpNew2").value;
+      if(!o||!n){toast("Ҳар ду майдонро пур кунед · заполните поля",true);return false;}
+      if(n.length<6){toast("Рамзи нав кӯтоҳ аст · не короче 6 символов",true);return false;}
+      if(n!==n2){toast("Такрори рамз мувофиқ нест · пароли не совпадают",true);return false;}
+      if(n===o){toast("Рамзи нав бояд фарқ кунад · новый пароль совпадает со старым",true);return false;}
       S.busy=true;render();
-      apiPost("login",{login:u,password:p}).then(function(j){
-        S.session=j.data; S.me=j.data.role.key;
-        saveSession(S.session);
-        S.busy=false;
-        if(j.state)applyState(j.state);
-        render();
-        toast("Хуш омадед, "+j.data.role.name);
+      apiPost("changePassword",{oldPassword:o,newPassword:n}).then(function(){
+        S.busy=false;render();
+        toast("Рамз иваз шуд · пароль изменён");
       }).catch(function(e){
         S.busy=false;render();
-        toast(e.message||"Даромад нашуд",true);
-        openLogin(e.message||"");
+        toast(e.message||"Иваз нашуд",true);
+        if(/Сессия|сессия/.test(e.message||""))openLogin("Сессия тамом шуд · войдите заново");
       });
     }
   });
 }
-/* без базы (демонстрация) пароль проверять негде — просто выбор должности */
-function openLocalRole(){
-  var list=S.signers&&S.signers.length?S.signers:DEFAULT_SIGNERS;
-  modal({
-    title:"Шумо кистед? · кто вы",
-    body:'<div><label class="f">Вазифа · должность</label><select id="lrK">'+
-      list.map(function(r){
-        return '<option value="'+esc(r.key)+'">'+esc(r.name)+" — "+esc(r.posRu)+"</option>";
-      }).join("")+"</select></div>"+
-      '<p class="hint">База не подключена, поэтому пароль проверять негде: это режим просмотра '+
-      "в одном браузере. На рабочем сайте вход по логину и паролю.</p>",
-    okText:"Интихоб",
-    onOk:function(root){
-      var k=root.querySelector("#lrK").value;
-      var r=null;
-      for(var i=0;i<list.length;i++)if(list[i].key===k)r=list[i];
-      if(!r)return false;
-      S.session={token:"",role:{key:r.key,name:r.name,posRu:r.posRu,posTj:r.posTj,order:r.order}};
-      S.me=r.key; saveSession(S.session); render();
-      toast("Хуш омадед, "+r.name);
-    }
-  });
-}
+
 function doLogout(){
   var name=S.session&&S.session.role?S.session.role.name:"";
   modal({
@@ -1008,19 +1069,19 @@ function modal(opt){
   var host=document.getElementById("modalHost");
   host.innerHTML='<div class="scrim"><div class="modal'+(opt.wide?" wide":"")+'" role="dialog" aria-modal="true">'+
     '<div class="mh"><h3>'+esc(opt.title)+'</h3></div><div class="mb">'+opt.body+"</div>"+
-    '<div class="mf"><button class="btn" data-x="c">Бекор</button>'+
+    '<div class="mf">'+(opt.noCancel?"":'<button class="btn" data-x="c">Бекор</button>')+
     '<button class="btn '+(opt.danger?"dang":"pri")+'" data-x="o">'+esc(opt.okText||"ОК")+"</button></div></div></div>";
   var root=host.querySelector(".modal");
   function close(){host.innerHTML="";document.removeEventListener("keydown",onKey);}
   function onKey(e){if(e.key==="Escape")close();}
-  host.querySelector('[data-x="c"]').onclick=close;
+  var cancel=host.querySelector('[data-x="c"]'); if(cancel)cancel.onclick=close;
   host.querySelector('[data-x="o"]').onclick=function(){
     if(opt.onOk&&opt.onOk(root)===false)return;
     close();
   };
   host.querySelector(".scrim").onclick=function(e){if(e.target===e.currentTarget)close();};
   document.addEventListener("keydown",onKey);
-  if(opt.onOpen)opt.onOpen(root);
+  if(opt.onOpen)opt.onOpen(root,close);
   var f=root.querySelector("input,textarea,select,[data-role]"); if(f)f.focus();
 }
 var toastT=null;
@@ -1486,5 +1547,5 @@ S.me=S.session?S.session.role.key:null;
 var foot=document.getElementById("footText");
 if(foot&&CFG.FOOTER)foot.textContent=CFG.FOOTER;
 render();
-reload();
+if(S.session)reload();
 })();

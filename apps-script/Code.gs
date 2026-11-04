@@ -61,6 +61,7 @@ function doPost(e) {
       case 'importRegistry': out = importRegistry(p); break;
       case 'login':         out = login(p); break;
       case 'logout':        out = logout(p); break;
+      case 'changePassword': out = changePassword(p); break;
       default: throw new Error('Амали номаълум · неизвестное действие: ' + action);
     }
     return json({ok: true, data: out, state: bootstrap()});
@@ -272,6 +273,39 @@ function login(p) {
 
 function logout(p) {
   if (p && p.token) PropertiesService.getScriptProperties().deleteProperty('s_' + p.token);
+  return {ok: true};
+}
+
+/**
+ * Смена пароля самим подписантом: старый пароль + новый.
+ * Новый сразу кладётся отпечатком, прочитать его в таблице нельзя.
+ * Остальные сессии этого человека закрываются — на случай чужого входа.
+ */
+function changePassword(p) {
+  var s = auth(p);
+  var cur = String((p && p.oldPassword) || '');
+  var nw  = String((p && p.newPassword) || '');
+
+  var stored = String(s.password || '').trim();
+  var ok = isHash(stored) ? (sha256(cur) === stored) : (cur === stored);
+  if (!ok) throw new Error('Рамзи кӯҳна нодуруст · старый пароль неверен');
+
+  if (nw.length < 6) throw new Error('Рамзи нав бояд на кам аз 6 аломат бошад · новый пароль не короче 6 символов');
+  if (nw === cur) throw new Error('Рамзи нав бояд фарқ кунад · новый пароль должен отличаться от старого');
+
+  s.password = sha256(nw);
+  upsert('signers', s);
+
+  // Закрываем прочие сессии этого подписанта, текущую оставляем.
+  var props = PropertiesService.getScriptProperties();
+  var all = props.getProperties();
+  Object.keys(all).forEach(function (k) {
+    if (k.indexOf('s_') !== 0 || k === 's_' + p.token) return;
+    try {
+      if (JSON.parse(all[k]).key === s.key) props.deleteProperty(k);
+    } catch (e) { /* мусорное свойство — не трогаем */ }
+  });
+
   return {ok: true};
 }
 
