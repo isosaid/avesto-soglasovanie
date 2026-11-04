@@ -92,6 +92,47 @@ ul.list li:last-child{border-bottom:0}
 .row .l3{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
 .row .sum{font-family:var(--mono);font-size:13px;font-weight:600;margin-left:auto}
 
+/* ── панель поиска и фильтров ── */
+.toolbar{display:flex;gap:10px;flex-wrap:wrap;align-items:center;background:var(--card);
+  border:1px solid var(--rule);border-radius:9px;padding:11px 13px;margin-bottom:16px}
+.toolbar input[type="search"]{flex:1 1 260px;min-width:0;width:auto;padding:7px 11px;font-size:14px}
+.chips{display:flex;gap:4px;flex-wrap:wrap}
+.chips button{border:1px solid var(--rule);background:none;color:var(--ink-soft);border-radius:20px;
+  padding:4px 12px;font-size:12.5px;white-space:nowrap}
+.chips button:hover{border-color:var(--ink-faint)}
+.chips button[aria-pressed="true"]{background:var(--accent-soft);border-color:var(--accent);
+  color:var(--accent);font-weight:700}
+.chips.modes button[aria-pressed="true"]{background:var(--ink);border-color:var(--ink);color:var(--paper)}
+
+/* ── карточка контракта ── */
+.row.conrow{grid-template-columns:minmax(0,1fr);gap:4px;padding:13px 14px 15px}
+.row.conrow .money{display:flex;align-items:baseline;gap:5px;flex-wrap:wrap;font-size:13px;margin-top:2px}
+.row.conrow .money .num{font-weight:600}
+.row.conrow .money .sep,.row.conrow .money .cur{color:var(--ink-faint);font-size:12px}
+.row.conrow .money .tot{color:var(--ink-soft);font-weight:400}
+.row.conrow .money .rest{margin-left:auto;font-family:var(--mono);font-size:12.5px;color:var(--ink-faint)}
+.row.conrow .money .rest.done{color:var(--ok)}
+.row.conrow .money .rest.over{color:var(--no);font-weight:700}
+.row.conrow .money .rest.part{color:var(--wait)}
+.row.conrow .bar{margin-top:7px}
+.bar i.done{background:var(--ok)} .bar i.part{background:var(--wait)}
+.bar i.over{background:var(--no)} .bar i.none{background:var(--rule-strong)}
+
+/* ── табличный вид реестра ── */
+table.grid{font-size:13.5px;min-width:860px}
+table.grid th{text-align:left;font-size:11px;letter-spacing:.05em;text-transform:uppercase;
+  color:var(--ink-faint);font-weight:700;padding:10px 12px;border-bottom:1px solid var(--rule-strong);
+  position:sticky;top:0;background:var(--card);z-index:1}
+table.grid td{padding:9px 12px;border-bottom:1px solid var(--rule);vertical-align:top}
+table.grid tbody tr{cursor:pointer}
+table.grid tbody tr:hover{background:var(--paper)}
+table.grid .r{text-align:right}
+table.grid .sub{display:block;font-size:11.5px;color:var(--ink-faint);margin-top:2px}
+table.grid .neg{color:var(--no);font-weight:700}
+table.grid tfoot td{padding:10px 12px;border-top:2px solid var(--rule-strong);font-weight:700;
+  background:var(--paper)}
+table.grid tfoot tr.sum td{border-bottom:0}
+
 /* ── бейджи ── */
 .badge{display:inline-flex;align-items:center;gap:4px;font-size:11.5px;font-weight:700;padding:2px 8px;border-radius:4px;white-space:nowrap}
 .badge.draft{background:var(--paper);color:var(--ink-faint);border:1px solid var(--rule-strong)}
@@ -238,3 +279,10 @@ footer.site a{color:var(--ink-soft)}
   .sheet{border:0;box-shadow:none;max-width:none;padding:0}
   @page{size:A4;margin:14mm}
 }
+
+/* ── сгруппированная форма ── */
+fieldset.grp{border:1px solid var(--rule);border-radius:8px;padding:12px 14px 14px;margin:0;display:grid;gap:12px}
+fieldset.grp legend{font-size:11.5px;letter-spacing:.09em;text-transform:uppercase;color:var(--ink-faint);
+  font-weight:700;padding:0 6px}
+.fh{display:block;font-size:11.5px;color:var(--ink-faint);margin-top:3px}
+.modal.wide{width:min(820px,100%)}

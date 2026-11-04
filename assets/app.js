@@ -146,6 +146,7 @@ var S={
   tab:"requests", filter:"all",
   contracts:[], requests:[], signers:DEFAULT_SIGNERS.slice(),
   selReq:null, selCon:null, sheetFor:null,
+  q:"", cur:"all", rest:"all", conMode:"cards",
   me:null, busy:false, loaded:false, error:null
 };
 function lsGet(k){try{return localStorage.getItem(k);}catch(e){return null;}}
@@ -406,18 +407,52 @@ function sheetView(r){
 }
 
 /* ── контракты ── */
+function conMatches(c){
+  var q=(S.q||"").trim().toLowerCase();
+  if(q){
+    var hay=[c.no,c.supplier,c.product,c.country,c.object].join(" ").toLowerCase();
+    if(hay.indexOf(q)<0)return false;
+  }
+  if(S.cur&&S.cur!=="all"&&(c.currency||"—")!==S.cur)return false;
+  if(S.rest==="open"&&balance(c)<=0.0001)return false;
+  if(S.rest==="done"&&!((Number(c.invoice)||0)>0&&balance(c)<=0.0001))return false;
+  if(S.rest==="over"&&balance(c)>=-0.0001)return false;
+  return true;
+}
 function renderContracts(){
-  var list=S.contracts.slice().sort(function(a,b){return String(b.date||"").localeCompare(String(a.date||""));});
+  var all=S.contracts.slice().sort(function(a,b){return String(b.date||"").localeCompare(String(a.date||""));});
+  var list=all.filter(conMatches);
+  var curs=[];
+  all.forEach(function(c){var k=c.currency||"—";if(curs.indexOf(k)<0)curs.push(k);});
+  var totalTjs=list.reduce(function(s,c){return s+paidTjs(c);},0);
+
+  var bar='<div class="toolbar">'+
+    '<input id="conQ" type="search" placeholder="Поиск: поставщик, номер контракта, продукция" value="'+esc(S.q||"")+'">'+
+    '<div class="chips">'+
+      '<button data-cur="all" aria-pressed="'+(!S.cur||S.cur==="all")+'">Ҳама асъор</button>'+
+      curs.map(function(k){
+        return '<button data-cur="'+esc(k)+'" aria-pressed="'+(S.cur===k)+'">'+esc(k)+"</button>";}).join("")+
+    '</div><div class="chips">'+
+      [["all","Ҳама"],["open","Бо бақия"],["done","Пӯшида"],["over","Зиёдпардохт"]].map(function(f){
+        return '<button data-rest="'+f[0]+'" aria-pressed="'+((S.rest||"all")===f[0])+'">'+f[1]+"</button>";}).join("")+
+    '</div><div class="chips modes">'+
+      [["cards","Корточкаҳо"],["table","Ҷадвал"]].map(function(m){
+        return '<button data-mode="'+m[0]+'" aria-pressed="'+((S.conMode||"cards")===m[0])+'">'+m[1]+"</button>";}).join("")+
+    "</div></div>";
+
+  if((S.conMode||"cards")==="table")
+    return bar+conTable(list)+
+      '<div class="panel" style="margin-top:14px"><div class="foot"><button class="btn sm" id="newCon">+ Шартномаи нав</button></div></div>';
+
   var sel=null;
   for(var i=0;i<list.length;i++) if(list[i].id===S.selCon)sel=list[i];
   if(!sel)sel=list[0]||null;
   if(sel)S.selCon=sel.id;
-  var totalTjs=list.reduce(function(s,c){return s+paidTjs(c);},0);
-  return '<div class="cols"><div class="panel">'+
-    '<div class="head"><h2>Шартномаҳо</h2><span class="count">'+list.length+"</span></div>"+
+  return bar+'<div class="cols"><div class="panel">'+
+    '<div class="head"><h2>Шартномаҳо</h2><span class="count">'+list.length+" / "+all.length+"</span></div>"+
     (list.length?'<ul class="list">'+list.map(function(c){return conRow(c,sel);}).join("")+"</ul>":
-      '<div class="empty"><h3>Шартнома нест</h3><p>'+
-      (S.loaded?"Реестр контрактов пуст.":'<span class="spin"></span> Маълумот бор мешавад…')+"</p></div>")+
+      '<div class="empty"><h3>Ёфт нашуд</h3><p>'+
+      (S.loaded?"По этому запросу контрактов нет.":'<span class="spin"></span> Маълумот бор мешавад…')+"</p></div>")+
     (list.length?'<div class="foot" style="font-size:13px;color:var(--ink-soft);display:flex;gap:8px">'+
       '<span>Ҳамагӣ пардохт</span><b class="num" style="margin-left:auto">'+nf(totalTjs,2)+" сом.</b></div>":"")+
     '<div class="foot"><button class="btn sm" id="newCon">+ Шартномаи нав</button></div></div>'+
@@ -425,15 +460,53 @@ function renderContracts(){
       "<p>Выберите контракт — откроется график платежей и остаток к оплате.</p></div></div>")+"</div>";
 }
 function conRow(c,sel){
-  var inv=Number(c.invoice)||0,pd=paidSum(c),pct=inv?Math.min(100,pd/inv*100):0;
-  return '<li><button class="row" data-con="'+esc(c.id)+'" aria-current="'+(sel&&sel.id===c.id)+'">'+
-    '<span class="l1"><b>'+esc(c.no||"—")+"</b>"+
-    (balance(c)<=0.0001&&inv>0?'<span class="badge approved">Пӯшида</span>':"")+"<time>"+dRu(c.date)+"</time></span>"+
-    '<span class="l2">'+esc(c.supplier||"—")+" · "+esc(c.product||"")+"</span>"+
-    '<span class="l3" style="display:block"><span class="bar"><i style="width:'+pct.toFixed(1)+'%"></i></span>'+
-    '<span style="display:flex;gap:8px;margin-top:5px;font-size:12.5px;color:var(--ink-soft)">'+
-    '<span class="num">'+nf(pd,0)+'</span><span>/</span><span class="num">'+nf(inv,0)+" "+esc(c.currency||"")+"</span>"+
-    '<span class="num" style="margin-left:auto">бақия '+nf(balance(c),0)+"</span></span></span></button></li>";
+  var inv=Number(c.invoice)||0,pd=paidSum(c),bal=balance(c);
+  var pct=inv?Math.max(0,Math.min(100,pd/inv*100)):0;
+  var state=bal<-0.0001?"over":(inv>0&&bal<=0.0001?"done":(pd>0?"part":"none"));
+  var tag={over:'<span class="badge rejected">Зиёд</span>',
+           done:'<span class="badge approved">Пӯшида</span>',
+           part:"",none:""}[state];
+  return '<li><button class="row conrow" data-con="'+esc(c.id)+'" aria-current="'+(sel&&sel.id===c.id)+'">'+
+    '<span class="l1"><b>'+esc(c.no||"—")+"</b>"+tag+"<time>"+dRu(c.date)+"</time></span>"+
+    '<span class="l2">'+esc(c.supplier||"—")+(c.product?" · "+esc(c.product):"")+"</span>"+
+    '<span class="money"><span class="num">'+nf(pd,0)+"</span>"+
+    '<span class="sep">/</span><span class="num tot">'+nf(inv,0)+"</span>"+
+    '<span class="cur">'+esc(c.currency||"")+"</span>"+
+    '<span class="rest '+state+'">'+(bal<-0.0001?"зиёд "+nf(-bal,0):"бақия "+nf(bal,0))+"</span></span>"+
+    '<span class="bar"><i class="'+state+'" style="width:'+pct.toFixed(1)+'%"></i></span>'+
+    "</button></li>";
+}
+function conTable(list){
+  var tot={};
+  list.forEach(function(c){
+    var k=c.currency||"—";
+    tot[k]=tot[k]||{inv:0,paid:0,rest:0,n:0};
+    tot[k].inv+=Number(c.invoice)||0; tot[k].paid+=paidSum(c);
+    tot[k].rest+=balance(c); tot[k].n++;
+  });
+  var body=list.map(function(c,i){
+    var bal=balance(c);
+    return '<tr data-con="'+esc(c.id)+'" tabindex="0">'+
+      '<td class="num">'+(i+1)+"</td>"+
+      "<td>"+esc(c.no||"—")+'<span class="sub">'+dRu(c.date)+"</span></td>"+
+      "<td>"+esc(c.supplier||"—")+'<span class="sub">'+esc(c.product||"")+"</span></td>"+
+      "<td>"+esc(c.currency||"")+'</td><td class="r num">'+nf(c.invoice,0)+"</td>"+
+      '<td class="r num">'+nf(paidSum(c),0)+'</td><td class="r num'+(bal<-0.0001?" neg":"")+'">'+
+      nf(bal,0)+'</td><td class="r num">'+nf(paidTjs(c),0)+"</td></tr>";
+  }).join("");
+  var foot=Object.keys(tot).map(function(k){
+    var g=tot[k];
+    return '<tr class="sum"><td></td><td colspan="2">Итого '+esc(k)+" · "+g.n+'</td><td>'+esc(k)+
+      '</td><td class="r num">'+nf(g.inv,0)+'</td><td class="r num">'+nf(g.paid,0)+
+      '</td><td class="r num">'+nf(g.rest,0)+"</td><td></td></tr>";
+  }).join("");
+  return '<div class="panel"><div class="head"><h2>Реестр контрактов</h2>'+
+    '<span class="count">'+list.length+"</span></div>"+
+    '<div class="tw"><table class="grid"><thead><tr><th>№</th><th>Шартнома</th><th>Интиқолдиҳанда</th>'+
+    '<th>Асъор</th><th class="r">Инвойс</th><th class="r">Пардохтшуда</th><th class="r">Бақия</th>'+
+    '<th class="r">Сомонӣ</th></tr></thead><tbody>'+
+    (body||'<tr><td colspan="8" class="hint">Ничего не найдено</td></tr>')+
+    "</tbody><tfoot>"+foot+"</tfoot></table></div></div>";
 }
 function conDoc(c){
   var inv=Number(c.invoice)||0,pd=paidSum(c),bal=balance(c);
@@ -451,6 +524,35 @@ function conDoc(c){
     '<div><dt>Маблағи ИНВОЙС</dt><dd class="num">'+money(inv,c.currency)+"</dd></div>"+
     "<div><dt>ГТД</dt><dd>"+esc(c.gtd||"—")+"</dd></div>"+
     (c.file?"<div><dt>Файли шартнома</dt><dd>"+esc(c.file)+"</dd></div>":"")+"</dl></section>"+
+    (function(){
+      var n=function(x){return Number(x)||0;};
+      var hasReq=n(c.reqAmount)||n(c.allocAmount)||n(c.req2Amount)||n(c.alloc2Amount)||n(c.allocTotal);
+      if(!hasReq)return "";
+      return "<section><h3>Заявка ва тақсим · заявка и выделение</h3>"+
+        '<dl class="kv">'+
+        (n(c.reqAmount)?"<div><dt>Заявка аз рӯи шартнома</dt><dd class=\"num\">"+nf(c.reqAmount,0)+" "+esc(c.currency||"")+"</dd></div>":"")+
+        (n(c.allocAmount)?"<div><dt>Ҷудошуда</dt><dd class=\"num\">"+nf(c.allocAmount,0)+" "+esc(c.currency||"")+"</dd></div>":"")+
+        (n(c.req2Amount)?"<div><dt>Заявка-2</dt><dd class=\"num\">"+nf(c.req2Amount,0)+
+          (n(c.req2Rate)?' <span style="color:var(--ink-faint);font-size:12px">курс '+nf(c.req2Rate,4)+"</span>":"")+"</dd></div>":"")+
+        (n(c.alloc2Amount)?"<div><dt>Ҷудошуда-2</dt><dd class=\"num\">"+nf(c.alloc2Amount,0)+
+          (n(c.alloc2Rate)?' <span style="color:var(--ink-faint);font-size:12px">курс '+nf(c.alloc2Rate,4)+"</span>":"")+"</dd></div>":"")+
+        (n(c.allocTotal)?"<div><dt>Ҳамагӣ ҷудошуда</dt><dd class=\"num\">"+nf(c.allocTotal,0)+"</dd></div>":"")+
+        "</dl></section>";
+    })()+
+    (function(){
+      var plan=(c.plan||[]).filter(function(x){return Number(x.amount)||0;});
+      if(!plan.length)return "";
+      var ps=plan.reduce(function(s,x){return s+(Number(x.amount)||0);},0);
+      return "<section><h3>Графики пардохт · график траншей</h3>"+
+        '<div class="paylist">'+plan.map(function(x,i){
+          return '<div class="pay"><span class="n">'+(i+1)+"</span><span>"+esc(x.cond||"—")+
+            '</span><span class="a">'+nf(x.amount,0)+" "+esc(c.currency||"")+"</span></div>";
+        }).join("")+"</div>"+
+        '<p class="hint" style="margin-top:9px">По графику: <b class="num">'+nf(ps,0)+"</b> "+esc(c.currency||"")+
+        " · по инвойсу: <b class=\"num\">"+nf(c.invoice,0)+"</b>"+
+        (Math.abs(ps-(Number(c.invoice)||0))>0.5?' · <span style="color:var(--wait)">расхождение '+
+          nf((Number(c.invoice)||0)-ps,0)+"</span>":"")+"</p></section>";
+    })()+
     "<section><h3>Пардохтҳо · платежи</h3>"+
     '<div class="paylist">'+((c.payments||[]).map(function(p,i){
       return '<div class="pay"><span class="n">'+(i+1)+"</span><span>"+esc(p.note||"Пардохт")+
@@ -482,7 +584,32 @@ function wire(){
   els=view.querySelectorAll("[data-req]");
   for(i=0;i<els.length;i++)(function(b){b.onclick=function(){S.selReq=b.dataset.req;S.sheetFor=null;render();};})(els[i]);
   els=view.querySelectorAll("[data-con]");
-  for(i=0;i<els.length;i++)(function(b){b.onclick=function(){S.selCon=b.dataset.con;render();};})(els[i]);
+  for(i=0;i<els.length;i++)(function(b){
+    b.onclick=function(){
+      S.selCon=b.dataset.con;
+      if((S.conMode||"cards")==="table")S.conMode="cards";
+      render();
+    };
+    if(b.tagName==="TR")b.onkeydown=function(e){if(e.key==="Enter")b.onclick();};
+  })(els[i]);
+  var q=view.querySelector("#conQ");
+  if(q){
+    q.oninput=function(){
+      S.q=q.value;
+      clearTimeout(S._qT);
+      S._qT=setTimeout(function(){
+        var pos=q.selectionStart; render();
+        var nq=view.querySelector("#conQ");
+        if(nq){nq.focus();try{nq.setSelectionRange(pos,pos);}catch(e){}}
+      },220);
+    };
+  }
+  els=view.querySelectorAll("[data-cur]");
+  for(i=0;i<els.length;i++)(function(b){b.onclick=function(){S.cur=b.dataset.cur;render();};})(els[i]);
+  els=view.querySelectorAll("[data-rest]");
+  for(i=0;i<els.length;i++)(function(b){b.onclick=function(){S.rest=b.dataset.rest;render();};})(els[i]);
+  els=view.querySelectorAll("[data-mode]");
+  for(i=0;i<els.length;i++)(function(b){b.onclick=function(){S.conMode=b.dataset.mode;render();};})(els[i]);
   els=view.querySelectorAll("[data-act]");
   for(i=0;i<els.length;i++)(function(b){b.onclick=function(){act(b.dataset.act,b.dataset.id);};})(els[i]);
   var nr=document.getElementById("newReq"); if(nr)nr.onclick=function(){editRequest(null);};
@@ -498,6 +625,7 @@ document.getElementById("tabs").onclick=function(e){
 document.getElementById("meBtn").onclick=pickRole;
 document.getElementById("reloadBtn").onclick=function(){reload();};
 document.getElementById("importBtn").onclick=openImport;
+document.getElementById("exportBtn").onclick=exportRegistry;
 document.getElementById("xlsxInput").onchange=function(e){
   handleFile(e.target.files&&e.target.files[0]);
   e.target.value="";
@@ -656,21 +784,68 @@ function editContract(c){
     no:"",date:new Date().toISOString().slice(0,10),supplier:"",country:"",object:"Мармарӣ",
     product:"",currency:"EUR",rate:10.81,bank:"",invoice:0,gtd:"",file:"",payments:[]
   };
+  var pl=(d.plan||[]).concat([{},{},{}]).slice(0,3);
+  var num=function(id,label,val,hint){
+    return '<div><label class="f">'+label+'</label><input id="'+id+'" class="num" inputmode="decimal" value="'+
+      esc(val===0||val?val:"")+'">'+(hint?'<span class="fh">'+hint+"</span>":"")+"</div>";
+  };
   modal({
     title:isNew?"Шартномаи нав":"Таҳрири шартнома",
-    body:'<div class="fgrid"><div><label class="f">№ шартнома</label><input id="cNo" value="'+esc(d.no)+'"></div>'+
-      '<div><label class="f">Сана</label><input id="cDate" type="date" value="'+esc(d.date)+'"></div></div>'+
-      '<div class="fgrid"><div><label class="f">Интиқолдиҳанда</label><input id="cSup" value="'+esc(d.supplier)+'"></div>'+
+    wide:true,
+    body:'<fieldset class="grp"><legend>Шартнома</legend>'+
+      '<div class="fgrid"><div><label class="f">№ шартнома *</label><input id="cNo" value="'+esc(d.no)+'"></div>'+
+      '<div><label class="f">Сана</label><input id="cDate" type="date" value="'+esc(d.date)+'"></div>'+
+      '<div><label class="f">Объекти дахлдор</label><input id="cObj" value="'+esc(d.object)+'"></div></div>'+
+      '<div class="fgrid"><div><label class="f">Интиқолдиҳанда *</label><input id="cSup" value="'+esc(d.supplier)+'"></div>'+
       '<div><label class="f">Давлат</label><input id="cCty" value="'+esc(d.country)+'"></div></div>'+
-      '<div class="fgrid"><div><label class="f">Объекти дахлдор</label><input id="cObj" value="'+esc(d.object)+'"></div>'+
-      '<div><label class="f">Маҳсулот</label><input id="cProd" value="'+esc(d.product)+'"></div></div>'+
-      '<div class="fgrid"><div><label class="f">Асъор</label><input id="cCur" value="'+esc(d.currency)+'"></div>'+
-      '<div><label class="f">Курс</label><input id="cRate" class="num" value="'+esc(d.rate)+'"></div>'+
-      '<div><label class="f">Маблағи ИНВОЙС</label><input id="cInv" class="num" value="'+esc(d.invoice)+'"></div></div>'+
-      '<div class="fgrid"><div><label class="f">Бонки пардохткунанда</label><input id="cBank" value="'+esc(d.bank)+'"></div>'+
+      '<div><label class="f">Маҳсулот</label><input id="cProd" value="'+esc(d.product)+'"></div></fieldset>'+
+
+      '<fieldset class="grp"><legend>Маблағ ва курс</legend><div class="fgrid">'+
+      '<div><label class="f">Асъор</label><input id="cCur" value="'+esc(d.currency)+'" placeholder="EUR / USD / СОМ"></div>'+
+      num("cRate","Курси ҳисобӣ",d.rate,"курс заявки")+
+      num("cInv","Маблағи ИНВОЙС *",d.invoice)+
+      "</div></fieldset>"+
+
+      '<fieldset class="grp"><legend>Заявка ва тақсим</legend><div class="fgrid">'+
+      num("cReqA","Заявка (валюта)",d.reqAmount)+num("cAllA","Ҷудошуда (валюта)",d.allocAmount)+
+      "</div><div class=\"fgrid\">"+
+      num("cR2R","Заявка-2: курс",d.req2Rate)+num("cR2A","Заявка-2 (валюта)",d.req2Amount)+
+      num("cA2R","Ҷудошуда-2: курс",d.alloc2Rate,"по нему считается сомони")+
+      num("cA2A","Ҷудошуда-2 (валюта)",d.alloc2Amount)+
+      "</div>"+num("cAllT","Ҳамагӣ ҷудошуда",d.allocTotal)+"</fieldset>"+
+
+      '<fieldset class="grp"><legend>Графики пардохт</legend>'+
+      pl.map(function(x,i){
+        return '<div class="fgrid" style="grid-template-columns:minmax(140px,2fr) minmax(90px,1fr)">'+
+          '<div><label class="f">Транш '+(i+1)+' — шарт/сана</label><input id="cP'+i+'c" value="'+
+          esc(x.cond||"")+'" placeholder="до 01.10.2026 / по готовности"></div>'+
+          num("cP"+i+"s","Сумма",x.amount)+"</div>";
+      }).join("")+
+      '<p class="hint" id="planHint"></p></fieldset>'+
+
+      '<fieldset class="grp"><legend>Иловагӣ</legend><div class="fgrid">'+
+      '<div><label class="f">Бонки пардохткунанда</label><input id="cBank" value="'+esc(d.bank)+'"></div>'+
       '<div><label class="f">ГТД</label><input id="cGtd" value="'+esc(d.gtd)+'"></div>'+
-      '<div><label class="f">Файли шартнома</label><input id="cFile" value="'+esc(d.file||"")+'" placeholder="контракт.pdf"></div></div>',
+      '<div><label class="f">Файли шартнома</label><input id="cFile" value="'+esc(d.file||"")+
+      '" placeholder="контракт.pdf"></div></div></fieldset>',
     okText:"Нигоҳ доштан",
+    onOpen:function(root){
+      function recalc(){
+        var inv=Number(root.querySelector("#cInv").value)||0;
+        var s=0;
+        for(var i=0;i<3;i++)s+=Number(root.querySelector("#cP"+i+"s").value)||0;
+        var h=root.querySelector("#planHint");
+        if(!s){h.textContent="График не задан — остаток считается от фактических оплат.";h.style.color="";return;}
+        var diff=inv-s;
+        h.innerHTML="По графику <b>"+nf(s,0)+"</b> из <b>"+nf(inv,0)+"</b>"+
+          (Math.abs(diff)>0.5?" · расхождение <b>"+nf(diff,0)+"</b>":" · сходится");
+        h.style.color=Math.abs(diff)>0.5?"var(--wait)":"var(--ok)";
+      }
+      ["cInv","cP0s","cP1s","cP2s"].forEach(function(id){
+        root.querySelector("#"+id).oninput=recalc;
+      });
+      recalc();
+    },
     onOk:function(root){
       d.no=root.querySelector("#cNo").value.trim();
       d.date=root.querySelector("#cDate").value;
@@ -684,7 +859,17 @@ function editContract(c){
       d.bank=root.querySelector("#cBank").value.trim();
       d.gtd=root.querySelector("#cGtd").value.trim();
       d.file=root.querySelector("#cFile").value.trim();
+      var g=function(id){return Number(root.querySelector("#"+id).value)||0;};
+      d.reqAmount=g("cReqA"); d.allocAmount=g("cAllA");
+      d.req2Rate=g("cR2R");  d.req2Amount=g("cR2A");
+      d.alloc2Rate=g("cA2R"); d.alloc2Amount=g("cA2A");
+      d.allocTotal=g("cAllT");
+      d.plan=[0,1,2].map(function(i){
+        return {cond:root.querySelector("#cP"+i+"c").value.trim(), amount:g("cP"+i+"s")};
+      }).filter(function(x){return x.cond||x.amount;});
       if(!d.no){toast("Рақами шартномаро нависед",true);return false;}
+      if(!d.supplier){toast("Интиқолдиҳандаро нависед · укажите поставщика",true);return false;}
+      if(!(Number(d.invoice)||0)){toast("Маблағи ИНВОЙС холӣ · укажите сумму инвойса",true);return false;}
       if(OFFLINE){
         if(!d.id)d.id="c"+Date.now().toString(36);
         var i=S.contracts.findIndex(function(x){return x.id===d.id;});
@@ -731,7 +916,7 @@ function pickRole(){
 /* ── диалог и уведомление ── */
 function modal(opt){
   var host=document.getElementById("modalHost");
-  host.innerHTML='<div class="scrim"><div class="modal" role="dialog" aria-modal="true">'+
+  host.innerHTML='<div class="scrim"><div class="modal'+(opt.wide?" wide":"")+'" role="dialog" aria-modal="true">'+
     '<div class="mh"><h3>'+esc(opt.title)+'</h3></div><div class="mb">'+opt.body+"</div>"+
     '<div class="mf"><button class="btn" data-x="c">Бекор</button>'+
     '<button class="btn '+(opt.danger?"dang":"pri")+'" data-x="o">'+esc(opt.okText||"ОК")+"</button></div></div></div>";
@@ -812,8 +997,54 @@ function parseRegistry(wb){
   });
   return best;
 }
+/* Шапка реестра трёхэтажная: строка групп («ПО ДОГОВОРАМ», «ЗАЯВКА-2»,
+   «Фактическая Оплата»), под ней подгруппы («Заявка», «Выделено»,
+   «Оплата-1»), под ними — что лежит в колонке («Курс», «Сумма (Валюта)»,
+   «Сумма (СОМ)», «Дата»). Ищем по этим надписям, а не по буквам. */
+function groupRange(H,name){
+  var from=-1;
+  for(var i=0;i<H.length;i++){
+    var t=cellText(H[i]).toLowerCase();
+    if(t&&t.indexOf(name.toLowerCase())>-1){from=i;break;}
+  }
+  if(from<0)return null;
+  var to=H.length;
+  for(var j=from+1;j<H.length;j++){ if(cellText(H[j])){to=j;break;} }
+  return [from,to];
+}
+function subRange(sub,range,name){
+  if(!range)return null;
+  var from=-1;
+  for(var i=range[0];i<range[1];i++){
+    var t=cellText(sub[i]).toLowerCase();
+    if(t&&t.indexOf(name.toLowerCase())>-1){from=i;break;}
+  }
+  if(from<0)return null;
+  var to=range[1];
+  for(var j=from+1;j<range[1];j++){ if(cellText(sub[j])){to=j;break;} }
+  return [from,to];
+}
+function colIn(sub,range,name){
+  if(!range)return -1;
+  for(var i=range[0];i<range[1];i++){
+    var t=cellText(sub[i]).toLowerCase();
+    if(t&&t.indexOf(name.toLowerCase())>-1)return i;
+  }
+  return -1;
+}
+function pairsIn(sub,range){
+  var out=[],pending=-1;
+  if(!range)return out;
+  for(var k=range[0];k<range[1];k++){
+    var s=cellText(sub[k]).toLowerCase();
+    if(s.indexOf("дата")>-1)pending=k;
+    else if(s.indexOf("сумма")>-1&&pending>-1){out.push([pending,k]);pending=-1;}
+  }
+  return out;
+}
+
 function readSheet(rows,hdr,sheetName){
-  var H=rows[hdr]||[], sub=rows[hdr+2]||[];
+  var H=rows[hdr]||[], sub=rows[hdr+2]||[], mid=rows[hdr+1]||[];
   var ci={
     date:findCol(H,"сана"), supplier:findCol(H,"номи ташкилоти"), country:findCol(H,"давлати"),
     no:findCol(H,"шартнома"), object:findCol(H,"объекти"), product:findCol(H,"номи махсулоти"),
@@ -826,25 +1057,21 @@ function readSheet(rows,hdr,sheetName){
   var rateCol=rates.length?rates[0]:-1;
   var payRateCol=rates.length>1?rates[rates.length-1]:rateCol;
 
-  // группа фактических оплат
-  var payStart=-1;
-  for(var i=0;i<H.length;i++){
-    var t=cellText(H[i]).toLowerCase();
-    if(t&&(t.indexOf("фактическая оплата")>-1||t.indexOf("факт оплата")>-1)){payStart=i;break;}
-  }
-  var payEnd=H.length;
-  if(payStart>-1){
-    for(var j=payStart+1;j<H.length;j++){ if(cellText(H[j])){payEnd=j;break;} }
-  }
-  var pairs=[];
-  if(payStart>-1){
-    var pending=-1;
-    for(var k=payStart;k<payEnd;k++){
-      var s=cellText(sub[k]).toLowerCase();
-      if(s.indexOf("дата")>-1)pending=k;
-      else if(s.indexOf("сумма")>-1&&pending>-1){pairs.push([pending,k]);pending=-1;}
-    }
-  }
+  var gPay=groupRange(H,"фактическая оплата")||groupRange(H,"факт оплата");
+  var pairs=pairsIn(sub,gPay);
+
+  /* остальные группы реестра — нужны, чтобы выгрузка вернула такой же файл */
+  var gDog=groupRange(H,"по договорам")||groupRange(H,"заявка (по договорам)");
+  var gZ2=groupRange(H,"заявка-2");
+  var gPlan=groupRange(H,"к оплате");
+  var dogReq=subRange(mid,gDog,"заявка"), dogAlloc=subRange(mid,gDog,"выделено");
+  var z2Req=subRange(mid,gZ2,"заявка"), z2Alloc=subRange(mid,gZ2,"выделено");
+  var planPairs=pairsIn(sub,gPlan);
+  var colAllocTotal=findCol(H,"всего выделено");
+  var cDogReqV=colIn(sub,dogReq,"валюта"), cDogReqS=colIn(sub,dogReq,"сом");
+  var cDogAllV=colIn(sub,dogAlloc,"валюта"), cDogAllS=colIn(sub,dogAlloc,"сом");
+  var cZ2ReqR=colIn(sub,z2Req,"курс"), cZ2ReqV=colIn(sub,z2Req,"валюта"), cZ2ReqS=colIn(sub,z2Req,"сом");
+  var cZ2AllR=colIn(sub,z2Alloc,"курс"), cZ2AllV=colIn(sub,z2Alloc,"валюта"), cZ2AllS=colIn(sub,z2Alloc,"сом");
 
   /* Начало данных ищем, а не отсчитываем: в одних версиях файла под шапкой
      два ряда подзаголовков, в других строки идут сразу. */
@@ -862,17 +1089,28 @@ function readSheet(rows,hdr,sheetName){
     var first=cellText(row[0]).toLowerCase();
     if(first.indexOf("итог")>-1)break;
     var inv=cellNum(row[ci.invoice]);
+    var line=row.slice(0,10).map(cellText).join(" ").toLowerCase();
+    if(line.indexOf("итого")>-1)continue;           // строки итогов из нашей же выгрузки
     if(!sup){ if(inv)skipped++; continue; }
     if(/^(свод|заявка|выделено|остаток|основные|строител)/i.test(sup))continue;
     var num=cellText(row[0]).replace(/\D/g,"");
     var cid="c-"+(num?("00"+num).slice(-2):String(contracts.length+1));
     var rate=rateCol>-1?cellNum(row[rateCol]):1; if(!rate)rate=1;
     var rp=payRateCol>-1?cellNum(row[payRateCol]):rate; if(!rp)rp=rate;
+    var at=function(col){return col>-1?cellNum(row[col]):0;};
     contracts.push({
       id:cid, no:cellText(row[ci.no])||"—", date:excelDate(row[ci.date]),
       supplier:sup, country:cellText(row[ci.country]), object:cellText(row[ci.object]),
       product:cellText(row[ci.product]), currency:cellText(row[ci.cur])||"—",
-      rate:rate, bank:"", invoice:inv, gtd:"", file:"", payments:[]
+      rate:rate, bank:"", invoice:inv, gtd:"", file:"", payments:[],
+      reqAmount:at(cDogReqV), reqTjs:at(cDogReqS),
+      allocAmount:at(cDogAllV), allocTjs:at(cDogAllS),
+      req2Rate:at(cZ2ReqR), req2Amount:at(cZ2ReqV), req2Tjs:at(cZ2ReqS),
+      alloc2Rate:at(cZ2AllR)||rp, alloc2Amount:at(cZ2AllV), alloc2Tjs:at(cZ2AllS),
+      allocTotal:at(colAllocTotal),
+      plan:planPairs.slice(0,3).map(function(pp){
+        return {cond:cellText(row[pp[0]])||excelDate(row[pp[0]]), amount:cellNum(row[pp[1]])};
+      })
     });
     var c=contracts[contracts.length-1], n=0;
     pairs.forEach(function(p){
@@ -898,7 +1136,9 @@ function handleFile(file){
   fr.onload=function(e){
     var parsed;
     try{
-      var wb=XLSX.read(new Uint8Array(e.target.result),{type:"array",cellDates:true});
+      /* без cellDates: иначе библиотека отдаёт даты объектом Date в местном
+         поясе и число месяца уезжает на день. Серийный номер переводим сами. */
+      var wb=XLSX.read(new Uint8Array(e.target.result),{type:"array"});
       parsed=parseRegistry(wb);
     }catch(err){ toast("Файл хонда нашуд: "+(err.message||err),true); return; }
     if(!parsed||!parsed.contracts.length){
@@ -966,6 +1206,104 @@ function applyImport(p,mode){
     return;
   }
   send("importRegistry",{contracts:next},"Импорт шуд: "+p.contracts.length+" шартнома");
+}
+
+/* ═══ выгрузка реестра в Excel — та же шапка, что в файле финотдела ═══ */
+var XCOL = 41; // A..AO
+function exportRegistry(){
+  if(typeof XLSX==="undefined"){toast("Модули Excel бор нашуд",true);return;}
+  var list=S.contracts.slice().sort(function(a,b){
+    return (parseInt(String(a.id).replace(/\D/g,""),10)||0)-(parseInt(String(b.id).replace(/\D/g,""),10)||0);
+  });
+  var A=function(){var r=[];for(var i=0;i<XCOL;i++)r.push(null);return r;};
+  var rows=[A(),A(),A(),A(),A(),A()];
+  rows[1][0]="Мархилаи -2 - ЗАЯВКИ на выделение ДС на "+dRu(new Date().toISOString());
+  var h4=rows[3],h5=rows[4],h6=rows[5];
+  ["№","Сана","Номи Ташкилоти интиколдиханда","Давлати интиколдиханда","№ шартнома",
+   "Объекти дахлдор","Номи махсулоти воридшаванда","Асъор"].forEach(function(t,i){h4[i]=t;});
+  h4[9]="Маблаги ИНВОЙС"; h4[10]="Курс";
+  h4[11]="ПО ДОГОВОРАМ"; h4[17]="ЗАЯВКА-2"; h4[25]="ВСЕГО ВЫДЕЛЕНО";
+  h4[26]="К оплате - согласно инвойса"; h4[33]="Фактическая Оплата";
+  h4[39]="ВСЕГО ОПЛАТА"; h4[40]="Фактический Остаток к выплате от суммы контракта";
+  h5[11]="Заявка"; h5[13]="Выделено"; h5[15]="Остаток";
+  h5[17]="Заявка"; h5[20]="Выделено"; h5[23]="Остаток";
+  h5[26]="К оплате-1транш"; h5[28]="К оплате-2транш"; h5[30]="К оплате-3транш"; h5[32]="ИТОГО";
+  h5[33]="Оплата-1"; h5[35]="Оплата-2"; h5[37]="Оплата-3";
+  var V="Сумма (Валюта)", C="Сумма (СОМ)";
+  [11,13,15].forEach(function(i){h6[i]=V;h6[i+1]=C;});
+  h6[17]="Курс"; h6[18]=V; h6[19]=C;
+  h6[20]="Курс"; h6[21]=V; h6[22]=C;
+  h6[23]=V; h6[24]=C;
+  [26,28,30].forEach(function(i){h6[i]="Дата";h6[i+1]="Сумма";});
+  [33,35,37].forEach(function(i){h6[i]="Дата";h6[i+1]="Сумма";});
+
+  var tot={};
+  list.forEach(function(c,idx){
+    var r=A(), n=function(x){return Number(x)||0;};
+    var inv=n(c.invoice), paid=paidSum(c), plan=(c.plan||[]);
+    var planSum=plan.reduce(function(s,x){return s+n(x.amount);},0);
+    /* даты пишем как «дд.мм.гггг»: ISO-строку Excel распознаёт как дату
+       и сдвигает её на день по часовому поясу */
+    var dOut=function(s){ var t=dRu(s); return t==="—"?(s||""):t; };
+    r[0]=idx+1; r[1]=dOut(c.date); r[2]=c.supplier||""; r[3]=c.country||"";
+    r[4]=c.no||""; r[5]=c.object||""; r[6]=c.product||""; r[7]=c.currency||"";
+    r[9]=inv; r[10]=n(c.rate);
+    r[11]=n(c.reqAmount); r[12]=n(c.reqTjs);
+    r[13]=n(c.allocAmount); r[14]=n(c.allocTjs);
+    r[15]=n(c.reqAmount)-n(c.allocAmount); r[16]=n(c.reqTjs)-n(c.allocTjs);
+    r[17]=n(c.req2Rate); r[18]=n(c.req2Amount); r[19]=n(c.req2Tjs);
+    r[20]=n(c.alloc2Rate); r[21]=n(c.alloc2Amount); r[22]=n(c.alloc2Tjs);
+    r[23]=n(c.req2Amount)-n(c.alloc2Amount); r[24]=n(c.req2Tjs)-n(c.alloc2Tjs);
+    r[25]=n(c.allocTotal);
+    [0,1,2].forEach(function(k){
+      if(plan[k]){ r[26+k*2]=plan[k].cond||""; r[27+k*2]=n(plan[k].amount); }
+    });
+    r[32]=inv-planSum;
+    (c.payments||[]).slice(0,3).forEach(function(p,k){
+      r[33+k*2]=dOut(p.date); r[34+k*2]=n(p.amount);
+    });
+    r[39]=paid; r[40]=inv-paid;
+    rows.push(r);
+    var cur=c.currency||"—";
+    tot[cur]=tot[cur]||{inv:0,paid:0,rest:0};
+    tot[cur].inv+=inv; tot[cur].paid+=paid; tot[cur].rest+=inv-paid;
+  });
+
+  rows.push(A());
+  Object.keys(tot).forEach(function(cur){
+    var r=A();
+    r[6]="Итого:"; r[7]=cur; r[9]=tot[cur].inv; r[39]=tot[cur].paid; r[40]=tot[cur].rest;
+    rows.push(r);
+  });
+  var rt=A();
+  rt[6]="Итого в сомонӣ:";
+  rt[39]=list.reduce(function(s,c){return s+paidTjs(c);},0);
+  rows.push(rt);
+
+  var ws=XLSX.utils.aoa_to_sheet(rows);
+  ws["!merges"]=[
+    {s:{r:1,c:0},e:{r:1,c:25}},
+    {s:{r:3,c:11},e:{r:3,c:16}}, {s:{r:3,c:17},e:{r:3,c:24}},
+    {s:{r:3,c:26},e:{r:3,c:32}}, {s:{r:3,c:33},e:{r:3,c:38}},
+    {s:{r:4,c:11},e:{r:4,c:12}}, {s:{r:4,c:13},e:{r:4,c:14}}, {s:{r:4,c:15},e:{r:4,c:16}},
+    {s:{r:4,c:17},e:{r:4,c:19}}, {s:{r:4,c:20},e:{r:4,c:22}}, {s:{r:4,c:23},e:{r:4,c:24}},
+    {s:{r:4,c:26},e:{r:4,c:27}}, {s:{r:4,c:28},e:{r:4,c:29}}, {s:{r:4,c:30},e:{r:4,c:31}},
+    {s:{r:4,c:33},e:{r:4,c:34}}, {s:{r:4,c:35},e:{r:4,c:36}}, {s:{r:4,c:37},e:{r:4,c:38}}
+  ];
+  [0,1,2,3,4,5,6,7,9,10,25,32,39,40].forEach(function(c){
+    ws["!merges"].push({s:{r:3,c:c},e:{r:5,c:c}});
+  });
+  ws["!cols"]=[{wch:5},{wch:13},{wch:38},{wch:16},{wch:20},{wch:12},{wch:34},{wch:7},{wch:5},
+               {wch:14},{wch:9}].concat(new Array(30).fill({wch:13}));
+  var wb=XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb,ws,"общ");
+  var out=XLSX.write(wb,{bookType:"xlsx",type:"array"});
+  var blob=new Blob([out],{type:"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"});
+  var url=URL.createObjectURL(blob), a=document.createElement("a");
+  a.href=url; a.download="Мархилаи-2 — реестр "+new Date().toISOString().slice(0,10)+".xlsx";
+  document.body.appendChild(a); a.click(); document.body.removeChild(a);
+  setTimeout(function(){URL.revokeObjectURL(url);},1500);
+  toast("Реестр выгружен: "+list.length+" шартнома");
 }
 
 /* ═══ чтение опубликованной таблицы (без Apps Script) ═══ */

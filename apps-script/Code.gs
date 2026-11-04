@@ -18,7 +18,10 @@ var SHEETS = {
 };
 
 var COLS = {
-  contracts: ['id','no','date','supplier','country','object','product','currency','rate','bank','invoice','gtd','file'],
+  contracts: ['id','no','date','supplier','country','object','product','currency','rate','bank','invoice','gtd','file',
+              'reqAmount','reqTjs','allocAmount','allocTjs','req2Rate','req2Amount','req2Tjs',
+              'alloc2Rate','alloc2Amount','alloc2Tjs','allocTotal',
+              'plan1Cond','plan1Sum','plan2Cond','plan2Sum','plan3Cond','plan3Sum'],
   payments:  ['id','contractId','amount','date','rate','tjs','note','requestId'],
   requests:  ['id','number','date','company','contractId','currency','rate','purpose','purposeShort','submittedAt','paidAt','createdAt'],
   items:     ['id','requestId','name','unit','qty','price'],
@@ -158,6 +161,13 @@ function bootstrap() {
   contracts.forEach(function (c) {
     c.rate = Number(c.rate) || 0;
     c.invoice = Number(c.invoice) || 0;
+    ['reqAmount','reqTjs','allocAmount','allocTjs','req2Rate','req2Amount','req2Tjs',
+     'alloc2Rate','alloc2Amount','alloc2Tjs','allocTotal'].forEach(function (k) {
+      c[k] = Number(c[k]) || 0;
+    });
+    c.plan = [1, 2, 3].map(function (i) {
+      return {cond: c['plan' + i + 'Cond'] || '', amount: Number(c['plan' + i + 'Sum']) || 0};
+    }).filter(function (x) { return x.cond || x.amount; });
     c.payments = payments.filter(function (p) { return String(p.contractId) === String(c.id); })
       .map(function (p) {
         return {id: p.id, amount: Number(p.amount) || 0, date: p.date, rate: Number(p.rate) || 0,
@@ -204,15 +214,33 @@ function checkPin(roleKey, pin) {
 
 /* ─────────────────────────── запись ─────────────────────────── */
 
+/** Раскладывает контракт сайта по колонкам листа, включая график траншей. */
+function contractRow(c) {
+  var n = function (v) { return Number(v) || 0; };
+  var row = {
+    id: c.id, no: c.no || '', date: c.date || '', supplier: c.supplier || '',
+    country: c.country || '', object: c.object || '', product: c.product || '',
+    currency: c.currency || '', rate: n(c.rate), bank: c.bank || '',
+    invoice: n(c.invoice), gtd: c.gtd || '', file: c.file || '',
+    reqAmount: n(c.reqAmount), reqTjs: n(c.reqTjs),
+    allocAmount: n(c.allocAmount), allocTjs: n(c.allocTjs),
+    req2Rate: n(c.req2Rate), req2Amount: n(c.req2Amount), req2Tjs: n(c.req2Tjs),
+    alloc2Rate: n(c.alloc2Rate), alloc2Amount: n(c.alloc2Amount), alloc2Tjs: n(c.alloc2Tjs),
+    allocTotal: n(c.allocTotal)
+  };
+  var plan = c.plan || [];
+  for (var i = 0; i < 3; i++) {
+    row['plan' + (i + 1) + 'Cond'] = plan[i] ? (plan[i].cond || '') : '';
+    row['plan' + (i + 1) + 'Sum'] = plan[i] ? n(plan[i].amount) : '';
+  }
+  return row;
+}
+
 function saveContract(p) {
   var c = p.contract || {};
   if (!c.no) throw new Error('Рақами шартнома холӣ · не указан номер контракта');
   if (!c.id) c.id = uid('c');
-  upsert('contracts', {
-    id: c.id, no: c.no, date: c.date || '', supplier: c.supplier || '', country: c.country || '',
-    object: c.object || '', product: c.product || '', currency: c.currency || '', rate: Number(c.rate) || 0,
-    bank: c.bank || '', invoice: Number(c.invoice) || 0, gtd: c.gtd || '', file: c.file || ''
-  });
+  upsert('contracts', contractRow(c));
   return {id: c.id};
 }
 
@@ -365,12 +393,8 @@ function importRegistry(p) {
   var crows = [], prows = [], pn = 0;
   list.forEach(function (c) {
     var cid = c.id || uid('c');
-    crows.push(toRow('contracts', {
-      id: cid, no: c.no || '', date: c.date || '', supplier: c.supplier || '',
-      country: c.country || '', object: c.object || '', product: c.product || '',
-      currency: c.currency || '', rate: Number(c.rate) || 0, bank: c.bank || '',
-      invoice: Number(c.invoice) || 0, gtd: c.gtd || '', file: c.file || ''
-    }));
+    c.id = cid;
+    crows.push(toRow('contracts', contractRow(c)));
     (c.payments || []).forEach(function (q) {
       pn++;
       prows.push(toRow('payments', {
