@@ -147,7 +147,7 @@ var S={
   contracts:[], requests:[], signers:DEFAULT_SIGNERS.slice(),
   selReq:null, selCon:null, sheetFor:null,
   q:"", cur:"all", rest:"all", conMode:"cards",
-  me:null, busy:false, loaded:false, error:null
+  session:null, me:null, busy:false, loaded:false, error:null
 };
 function lsGet(k){try{return localStorage.getItem(k);}catch(e){return null;}}
 function lsSet(k,v){try{localStorage.setItem(k,v);}catch(e){}}
@@ -164,6 +164,7 @@ function apiGet(){
     .then(function(j){ if(!j.ok)throw new Error(j.error||"Хатогии сервер"); return j.data; });
 }
 function apiPost(action,payload){
+  if(S.session&&S.session.token&&action!=="login")payload=Object.assign({token:S.session.token},payload);
   return fetch(API,{
     method:"POST",
     headers:{"Content-Type":"text/plain;charset=utf-8"},
@@ -197,7 +198,7 @@ function reload(){
 }
 function send(action,payload,okMsg){
   if(READONLY){toast("Режими танҳо дидан · режим только просмотра: запись в таблицу не подключена",true);return Promise.reject();}
-  if(OFFLINE){toast("Базаи маълумот пайваст нашуд · база не подключена",true);return Promise.reject();}
+  if(OFFLINE)return localDo(action,payload,okMsg);
   S.busy=true;render();
   return apiPost(action,payload).then(function(j){
     if(j.state)applyState(j.state);
@@ -205,15 +206,64 @@ function send(action,payload,okMsg){
     if(okMsg)toast(okMsg);
     return j.data;
   }).catch(function(e){
-    S.busy=false;render();
-    toast(e.message||"Хатогӣ",true);
+    S.busy=false;
+    var m=e&&e.message||"";
+    if(m.indexOf("Сессия")>-1||m.indexOf("сессия")>-1){
+      S.session=null; S.me=null; clearSession(); render();
+      openLogin("Сессия тамом шуд · войдите заново");
+    }else render();
+    toast(m||"Хатогӣ",true);
     throw e;
   });
 }
 
 /* ═══ PIN ═══ */
-function cachedPin(role){return ssGet("avesto.pin."+role)||"";}
-function cachePin(role,pin){ssSet("avesto.pin."+role,pin);}
+/* Без базы (демонстрация) те же действия записываются в этот браузер. */
+function localDo(action,payload,okMsg){
+  var r=payload&&payload.requestId?findReq(payload.requestId):null;
+  if(action==="decide"){
+    if(!r||!S.me)return Promise.reject(new Error("Дархост ёфт нашуд"));
+    var who=signerBy(S.me)||{name:""};
+    r.approvals=r.approvals||{};
+    r.approvals[S.me]={decision:payload.decision,at:new Date().toISOString(),
+      byName:who.name,comment:payload.comment||""};
+    if(payload.decision==="rejected")r.status="rejected";
+  }else if(action==="markPaid"){
+    if(!r)return Promise.reject(new Error("Дархост ёфт нашуд"));
+    var c=findCon(r.contractId);
+    if(c){
+      c.payments=(c.payments||[]).concat([{amount:Number(payload.amount)||0,
+        date:payload.date||new Date().toISOString().slice(0,10),
+        rate:Number(payload.rate)||0,
+        tjs:(Number(payload.amount)||0)*(Number(payload.rate)||0),
+        note:payload.note||"",requestId:r.id}]);
+    }
+    r.paidAt=new Date().toISOString(); r.status="paid";
+  }else if(action==="deleteRequest"){
+    S.requests=S.requests.filter(function(x){return x.id!==payload.requestId;});
+    if(S.selReq===payload.requestId)S.selReq=null;
+  }else{
+    toast("Бе база ин амал дастрас нест · без базы это действие недоступно",true);
+    return Promise.reject(new Error("offline"));
+  }
+  localSave();render();
+  if(okMsg)toast(okMsg);
+  return Promise.resolve({});
+}
+
+/* ═══ сессия подписанта ═══ */
+function loadSession(){
+  try{
+    var raw=lsGet("avesto.session");
+    if(!raw)return null;
+    var s=JSON.parse(raw);
+    if(!s.token||!s.role)return null;
+    if(s.expiresAt&&new Date(s.expiresAt)<new Date())return null;
+    return s;
+  }catch(e){return null;}
+}
+function saveSession(s){ try{localStorage.setItem("avesto.session",JSON.stringify(s));}catch(e){} }
+function clearSession(){ try{localStorage.removeItem("avesto.session");}catch(e){} }
 
 /* ═══ рендер ═══ */
 var view=document.getElementById("view");
@@ -222,9 +272,9 @@ function render(){
     (S.tab==="requests"?renderRequests():renderContracts());
   wire();
   var btn=document.getElementById("meBtn");
-  var s=S.me&&signerBy(S.me);
-  btn.textContent=s?s.name:(S.me==="observer"?"Нозир":"Кто вы?");
-  btn.title=s?s.posRu:"Выбрать роль";
+  var s=S.session&&S.session.role;
+  btn.textContent=s?s.name:"Даромад · войти";
+  btn.title=s?(s.posRu+" — нажмите, чтобы выйти"):"Войти как подписант";
 }
 function offlineNotice(){
   return '<div class="notice"><span>⚠</span><span><b>База не подключена.</b> '+
@@ -338,7 +388,7 @@ function reqDoc(r){
 }
 function waitHint(r){
   var fk=finalKey(),tail="";
-  if(!S.me||S.me==="observer")tail=" Укажите свою должность в шапке, чтобы визировать.";
+  if(!S.me)tail=" Войдите под своей учётной записью, чтобы визировать.";
   if(S.me&&S.me!=="observer"&&signed(r,S.me)){
     var left=pendingNames(r,false);
     return "Шумо имзо гузоштаед · вы уже подписали. Ожидают подписи: <b>"+esc(left.join(", "))+"</b>.";
@@ -622,7 +672,9 @@ document.getElementById("tabs").onclick=function(e){
   for(var i=0;i<all.length;i++)all[i].setAttribute("aria-selected",String(all[i]===b));
   render();
 };
-document.getElementById("meBtn").onclick=pickRole;
+document.getElementById("meBtn").onclick=function(){
+  if(S.session)doLogout(); else openLogin();
+};
 document.getElementById("reloadBtn").onclick=function(){reload();};
 document.getElementById("importBtn").onclick=openImport;
 document.getElementById("exportBtn").onclick=exportRegistry;
@@ -658,20 +710,15 @@ function decide(r,decision){
   if(!s){toast("Вазифаи худро интихоб кунед · выберите свою должность",true);return;}
   modal({
     title:decision==="approved"?"Имзо гузоштан":"Рад кардан",
-    body:'<div><label class="f">PIN</label><input id="mPin" type="password" inputmode="numeric" '+
-      'autocomplete="off" value="'+esc(cachedPin(S.me))+'" placeholder="PIN аз лист «Имзокунандагон»"></div>'+
-      '<div><label class="f">'+(decision==="approved"?"Шарҳ (ихтиёрӣ) · комментарий":"Сабаби рад · причина отказа")+
+    body:'<div><label class="f">'+(decision==="approved"?"Шарҳ (ихтиёрӣ) · комментарий":"Сабаби рад · причина отказа")+
       '</label><textarea id="mComment"></textarea></div>'+
       '<p class="hint">Визу поставит: <b>'+esc(s.name)+"</b> — "+esc(s.posRu)+"</p>",
     okText:decision==="approved"?"Имзо гузоштан":"Рад кардан",
     danger:decision==="rejected",
     onOk:function(root){
-      var pin=root.querySelector("#mPin").value.trim();
       var cm=root.querySelector("#mComment").value.trim();
-      if(!pin){toast("PIN-ро ворид кунед",true);return false;}
       if(decision==="rejected"&&!cm){toast("Сабабро нависед · укажите причину",true);return false;}
-      cachePin(S.me,pin);
-      send("decide",{requestId:r.id,roleKey:S.me,pin:pin,decision:decision,comment:cm},
+      send("decide",{requestId:r.id,decision:decision,comment:cm},
         decision==="approved"?"Имзо сабт шуд":"Дархост рад шуд");
     }
   });
@@ -687,17 +734,12 @@ function markPaid(r){
       '<div><label class="f">Сана</label><input id="pDate" type="date" value="'+new Date().toISOString().slice(0,10)+'"></div>'+
       '<div><label class="f">Курс</label><input id="pRate" class="num" value="'+esc(r.rate||c.rate||"")+'"></div></div>'+
       '<div><label class="f">Шарҳ</label><input id="pNote" value="Пардохт аз рӯи дархости № '+esc(r.number||"")+'"></div>'+
-      '<div><label class="f">PIN</label><input id="pPin" type="password" inputmode="numeric" autocomplete="off" value="'+
-      esc(cachedPin(S.me))+'"></div>'+
       '<p class="hint">Бақия то пардохт: <b class="num">'+nf(balance(c),2)+" "+esc(c.currency||"")+"</b></p>",
     okText:"Қайд кардан",
     onOk:function(root){
       var amount=Number(root.querySelector("#pAmt").value)||0;
-      var pin=root.querySelector("#pPin").value.trim();
       if(amount<=0){toast("Маблағ нодуруст",true);return false;}
-      if(!pin){toast("PIN-ро ворид кунед",true);return false;}
-      cachePin(S.me,pin);
-      send("markPaid",{requestId:r.id,roleKey:S.me,pin:pin,amount:amount,
+      send("markPaid",{requestId:r.id,amount:amount,
         date:root.querySelector("#pDate").value,rate:Number(root.querySelector("#pRate").value)||0,
         note:root.querySelector("#pNote").value.trim()},"Пардохт сабт шуд");
     }
@@ -884,31 +926,79 @@ function editContract(c){
 }
 
 /* ── выбор роли ── */
-function pickRole(){
-  var chosen=S.me;
+function openLogin(note){
+  if(!API){openLocalRole();return;}
   modal({
-    title:"Шумо кӣ ҳастед? · Ваша должность",
-    body:'<p class="hint">Виза ставится от имени выбранной должности и подтверждается PIN-кодом. '+
-      "Выбор сохраняется в этом браузере.</p>"+
-      '<div class="pick" id="roleBox">'+S.signers.map(function(p){
-        return '<button type="button" data-role="'+esc(p.key)+'" aria-pressed="'+(S.me===p.key)+'">'+
-          '<span class="p1">'+esc(p.name)+'</span><span class="p2">'+esc(p.posTj)+"</span></button>";
-      }).join("")+
-      '<button type="button" data-role="observer" aria-pressed="'+(S.me==="observer")+'">'+
-      '<span class="p1">Нозир</span><span class="p2">Наблюдатель — только просмотр</span></button></div>',
-    okText:"Интихоб",
+    title:"Даромад ба система · вход",
+    body:(note?'<div class="notice" style="margin:0"><span>!</span><span>'+esc(note)+"</span></div>":"")+
+      '<div><label class="f">Логин</label><input id="lgU" autocomplete="username" '+
+      'placeholder="hakimov" value="'+esc(lsGet("avesto.lastLogin")||"")+'"></div>'+
+      '<div><label class="f">Рамз · пароль</label><input id="lgP" type="password" '+
+      'autocomplete="current-password"></div>'+
+      '<p class="hint">Логин и пароль выдаёт отдел автоматизации. '+
+      "После входа визы ставятся сразу — ничего вводить больше не нужно.</p>",
+    okText:"Даромадан",
     onOpen:function(root){
-      var bs=root.querySelectorAll("[data-role]");
-      for(var i=0;i<bs.length;i++)(function(b){
-        b.onclick=function(){
-          chosen=b.dataset.role;
-          for(var j=0;j<bs.length;j++)bs[j].setAttribute("aria-pressed",String(bs[j]===b));
-        };
-      })(bs[i]);
+      var u=root.querySelector("#lgU"), p=root.querySelector("#lgP");
+      (u.value?p:u).focus();
+      p.onkeydown=function(e){if(e.key==="Enter")root.parentNode.querySelector('[data-x="o"]').click();};
     },
+    onOk:function(root){
+      var u=root.querySelector("#lgU").value.trim();
+      var p=root.querySelector("#lgP").value;
+      if(!u||!p){toast("Логин ва рамзро ворид кунед",true);return false;}
+      lsSet("avesto.lastLogin",u);
+      S.busy=true;render();
+      apiPost("login",{login:u,password:p}).then(function(j){
+        S.session=j.data; S.me=j.data.role.key;
+        saveSession(S.session);
+        S.busy=false;
+        if(j.state)applyState(j.state);
+        render();
+        toast("Хуш омадед, "+j.data.role.name);
+      }).catch(function(e){
+        S.busy=false;render();
+        toast(e.message||"Даромад нашуд",true);
+        openLogin(e.message||"");
+      });
+    }
+  });
+}
+/* без базы (демонстрация) пароль проверять негде — просто выбор должности */
+function openLocalRole(){
+  var list=S.signers&&S.signers.length?S.signers:DEFAULT_SIGNERS;
+  modal({
+    title:"Шумо кистед? · кто вы",
+    body:'<div><label class="f">Вазифа · должность</label><select id="lrK">'+
+      list.map(function(r){
+        return '<option value="'+esc(r.key)+'">'+esc(r.name)+" — "+esc(r.posRu)+"</option>";
+      }).join("")+"</select></div>"+
+      '<p class="hint">База не подключена, поэтому пароль проверять негде: это режим просмотра '+
+      "в одном браузере. На рабочем сайте вход по логину и паролю.</p>",
+    okText:"Интихоб",
+    onOk:function(root){
+      var k=root.querySelector("#lrK").value;
+      var r=null;
+      for(var i=0;i<list.length;i++)if(list[i].key===k)r=list[i];
+      if(!r)return false;
+      S.session={token:"",role:{key:r.key,name:r.name,posRu:r.posRu,posTj:r.posTj,order:r.order}};
+      S.me=r.key; saveSession(S.session); render();
+      toast("Хуш омадед, "+r.name);
+    }
+  });
+}
+function doLogout(){
+  var name=S.session&&S.session.role?S.session.role.name:"";
+  modal({
+    title:"Баромад · выход",
+    body:"<p>Выйти из учётной записи <b>"+esc(name)+"</b>?</p>"+
+      '<p class="hint">Данные останутся видны, но ставить визы будет нельзя до следующего входа.</p>',
+    okText:"Баромадан",
     onOk:function(){
-      if(!chosen){toast("Вазифаро интихоб кунед",true);return false;}
-      S.me=chosen; lsSet("avesto.role",chosen); render();
+      var t=S.session&&S.session.token;
+      S.session=null; S.me=null; clearSession(); render();
+      if(t)apiPost("logout",{token:t}).catch(function(){});
+      toast("Шумо баромадед");
     }
   });
 }
@@ -1391,7 +1481,8 @@ function loadFromSheet(id){
 }
 
 /* ═══ запуск ═══ */
-S.me=lsGet("avesto.role")||null;
+S.session=loadSession();
+S.me=S.session?S.session.role.key:null;
 var foot=document.getElementById("footText");
 if(foot&&CFG.FOOTER)foot.textContent=CFG.FOOTER;
 render();

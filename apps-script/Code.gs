@@ -26,7 +26,7 @@ var COLS = {
   requests:  ['id','number','date','company','contractId','currency','rate','purpose','purposeShort','submittedAt','paidAt','createdAt'],
   items:     ['id','requestId','name','unit','qty','price'],
   approvals: ['id','requestId','roleKey','decision','at','byName','comment'],
-  signers:   ['key','posTj','posRu','name','pin','order']
+  signers:   ['key','posTj','posRu','name','login','password','order']
 };
 
 /* ─────────────────────────── вход ─────────────────────────── */
@@ -59,6 +59,8 @@ function doPost(e) {
       case 'markPaid':      out = markPaid(p); break;
       case 'deleteRequest': out = deleteRequest(p); break;
       case 'importRegistry': out = importRegistry(p); break;
+      case 'login':         out = login(p); break;
+      case 'logout':        out = logout(p); break;
       default: throw new Error('Амали номаълум · неизвестное действие: ' + action);
     }
     return json({ok: true, data: out, state: bootstrap()});
@@ -201,22 +203,81 @@ function bootstrap() {
     .sort(function (a, b) { return (Number(a.order) || 0) - (Number(b.order) || 0); })
     .map(function (s) {
       return {key: s.key, posTj: s.posTj, posRu: s.posRu, name: s.name,
-              hasPin: String(s.pin || '').trim() !== '', order: Number(s.order) || 0};
+              login: s.login || '', hasPassword: String(s.password || '').trim() !== '',
+              order: Number(s.order) || 0};
     });
 
   return {contracts: contracts, requests: requests, signers: publicSigners, serverTime: new Date().toISOString()};
 }
 
-/* ─────────────────────── проверка подписанта ─────────────────────── */
+/* ─────────────────────── вход и сессии ───────────────────────
+ * Пароль в таблице можно написать открытым текстом: при первом удачном
+ * входе он заменяется на хеш, и подсмотреть его больше нельзя.
+ * Токен сессии живёт 12 часов и хранится в свойствах скрипта.
+ */
+var SESSION_HOURS = 12;
 
-function checkPin(roleKey, pin) {
+function sha256(s) {
+  var raw = Utilities.computeDigest(Utilities.DigestAlgorithm.SHA_256, s, Utilities.Charset.UTF_8);
+  return raw.map(function (b) {
+    return ('0' + (b & 0xFF).toString(16)).slice(-2);
+  }).join('');
+}
+function isHash(s) { return /^[0-9a-f]{64}$/.test(String(s || '')); }
+
+function findSigner(field, value) {
   var signers = readAll('signers');
-  var s = null;
-  for (var i = 0; i < signers.length; i++) if (String(signers[i].key) === String(roleKey)) s = signers[i];
-  if (!s) throw new Error('Имзокунанда ёфт нашуд · подписант не найден: ' + roleKey);
-  var want = String(s.pin || '').trim();
-  if (want === '') throw new Error('Барои ин вазифа PIN таъин нашудааст · для этой должности не задан PIN');
-  if (String(pin || '').trim() !== want) throw new Error('PIN нодуруст · неверный PIN');
+  for (var i = 0; i < signers.length; i++) {
+    if (String(signers[i][field] || '').trim().toLowerCase() === String(value || '').trim().toLowerCase()) {
+      return signers[i];
+    }
+  }
+  return null;
+}
+
+function login(p) {
+  var s = findSigner('login', p.login);
+  var pass = String(p.password || '');
+  if (!s || !pass) throw new Error('Логин ё рамз нодуруст · неверный логин или пароль');
+
+  var stored = String(s.password || '').trim();
+  if (!stored) throw new Error('Барои ин корбар рамз таъин нашудааст · для этого пользователя не задан пароль');
+
+  var ok = isHash(stored) ? (sha256(pass) === stored) : (pass === stored);
+  if (!ok) throw new Error('Логин ё рамз нодуруст · неверный логин или пароль');
+
+  if (!isHash(stored)) {            // первый вход — прячем пароль
+    s.password = sha256(pass);
+    upsert('signers', s);
+  }
+
+  var token = Utilities.getUuid().replace(/-/g, '') + Utilities.getUuid().replace(/-/g, '');
+  var until = Date.now() + SESSION_HOURS * 3600 * 1000;
+  PropertiesService.getScriptProperties()
+    .setProperty('s_' + token, JSON.stringify({key: s.key, until: until}));
+  return {
+    token: token, expiresAt: new Date(until).toISOString(),
+    role: {key: s.key, name: s.name, posTj: s.posTj, posRu: s.posRu, order: Number(s.order) || 0}
+  };
+}
+
+function logout(p) {
+  if (p && p.token) PropertiesService.getScriptProperties().deleteProperty('s_' + p.token);
+  return {ok: true};
+}
+
+/** Возвращает подписанта по токену; бросает ошибку, если сессия негодна. */
+function auth(p) {
+  var raw = p && p.token
+    ? PropertiesService.getScriptProperties().getProperty('s_' + p.token) : null;
+  if (!raw) throw new Error('Сессия тамом шуд · сессия истекла, войдите заново');
+  var sess = JSON.parse(raw);
+  if (!sess.until || Date.now() > sess.until) {
+    PropertiesService.getScriptProperties().deleteProperty('s_' + p.token);
+    throw new Error('Сессия тамом шуд · сессия истекла, войдите заново');
+  }
+  var s = findSigner('key', sess.key);
+  if (!s) throw new Error('Имзокунанда ёфт нашуд · подписант не найден');
   return s;
 }
 
@@ -297,7 +358,8 @@ function submitRequest(p) {
 }
 
 function decide(p) {
-  var s = checkPin(p.roleKey, p.pin);
+  var s = auth(p);
+  p.roleKey = s.key;   // подписать можно только за себя
   var r = findRequest(p.requestId);
   if (!r) throw new Error('Дархост ёфт нашуд · заявка не найдена');
   if (!r.submittedAt) throw new Error('Дархост ҳанӯз фиристода нашуд · заявка ещё не отправлена на согласование');
@@ -348,7 +410,7 @@ function decide(p) {
 }
 
 function markPaid(p) {
-  checkPin(p.roleKey, p.pin);
+  auth(p);
   var r = findRequest(p.requestId);
   if (!r) throw new Error('Дархост ёфт нашуд · заявка не найдена');
   if (r.paidAt) throw new Error('Пардохт аллакай қайд шуд · оплата уже отмечена');
@@ -373,7 +435,7 @@ function markPaid(p) {
 }
 
 function deleteRequest(p) {
-  checkPin(p.roleKey, p.pin);
+  auth(p);
   var r = findRequest(p.requestId);
   if (!r) throw new Error('Дархост ёфт нашуд');
   if (r.submittedAt) throw new Error('Фиристодашударо нест кардан мумкин нест · отправленную заявку удалить нельзя');
@@ -433,13 +495,13 @@ function setup() {
   if (readAll('signers').length === 0) {
     // Порядок — как визируется бумажный бланк, снизу вверх
     var route = [
-      ['branch','Муовини директори генералӣ оид ба самти паррандапарварӣ ҶДММ «Мармарӣ»','Зам. ген. директора по птицеводству','Ҳакимов З.','',1],
-      ['finance','Муовини директори генералӣ оиди молияи ҶДММ «Мармарӣ»','Зам. ген. директора по финансам','Ибодов Д.М.','',2],
-      ['chiefacc','Сармуҳосиби ҶДММ «Мармарӣ»','Главный бухгалтер','Зоиров С.А.','',3],
-      ['initiator','Директори генералии ҶДММ «Мармарӣ»','Ген. директор предприятия-заявителя','Турсунов А.Г.','',4],
-      ['holding','Директори генералӣ ҶДММ «Авесто Гуруҳ»','Ген. директор холдинга — утверждение','Муҳамад Мирзо','',5]
+      ['branch','Муовини директори генералӣ оид ба самти паррандапарварӣ ҶДММ «Мармарӣ»','Зам. ген. директора по птицеводству','Ҳакимов З.','hakimov','',1],
+      ['finance','Муовини директори генералӣ оиди молияи ҶДММ «Мармарӣ»','Зам. ген. директора по финансам','Ибодов Д.М.','ibodov','',2],
+      ['chiefacc','Сармуҳосиби ҶДММ «Мармарӣ»','Главный бухгалтер','Зоиров С.А.','zoirov','',3],
+      ['initiator','Директори генералии ҶДММ «Мармарӣ»','Ген. директор предприятия-заявителя','Турсунов А.Г.','tursunov','',4],
+      ['holding','Директори генералӣ ҶДММ «Авесто Гуруҳ»','Ген. директор холдинга — утверждение','Муҳамад Мирзо','mirzo','',5]
     ];
     sheet('signers').getRange(2, 1, route.length, COLS.signers.length).setValues(route);
   }
-  SpreadsheetApp.getActive().toast('Листҳо тайёр · структура создана. Впишите PIN в лист «Имзокунандагон».');
+  SpreadsheetApp.getActive().toast('Листҳо тайёр · структура создана. Впишите пароли в лист «Имзокунандагон».');
 }
