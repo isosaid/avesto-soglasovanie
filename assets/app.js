@@ -55,14 +55,31 @@ var COMPANIES = [
   'ООО "Баракат 2013"',
   'ООО "Сити Сервис ЛТД"'
 ];
+/* Одна и та же организация пишется по-разному: ҶДММ «Мармарӣ» и ООО "Мармари".
+   Для сравнения отбрасываем форму собственности, кавычки и таджикские буквы. */
+var COMP_FORMS={"ҷдмм":1,"чдмм":1,"ооо":1,"оао":1,"зао":1,"пп":1,"тсрц":1,"мдо":1,"проект":1};
+function compKey(name){
+  var s=String(name||"").toLowerCase()
+    .replace(/ӣ/g,"и").replace(/ҳ/g,"х").replace(/қ/g,"к")
+    .replace(/ғ/g,"г").replace(/ҷ/g,"ч").replace(/ӯ/g,"у")
+    .replace(/[^a-zа-яё0-9]+/g," ").trim();
+  // слова вроде «ООО», «ҶДММ», «проект» отбрасываем: граница слова \b
+  // с кириллицей не работает, поэтому разбираем по словам, а не регуляркой
+  return s.split(" ").filter(function(w){
+    return w && !COMP_FORMS[w];
+  }).join(" ");
+}
+function sameCompany(a,b){ return compKey(a)===compKey(b); }
+
 /* Выпадающий список организаций; если в заявке стоит название не из списка
    (старые записи, импорт из Excel) — добавляем его первым, чтобы не потерять. */
 function companyOptions(cur){
   var list=COMPANIES.slice();
-  var v=String(cur||"").trim();
-  if(v&&list.indexOf(v)<0)list.unshift(v);
+  var v=String(cur||"").trim(), has=false;
+  for(var i=0;i<list.length;i++) if(sameCompany(list[i],v))has=true;
+  if(v&&!has)list.unshift(v);
   return list.map(function(c){
-    return '<option value="'+esc(c)+'"'+(c===v?" selected":"")+">"+esc(c)+"</option>";
+    return '<option value="'+esc(c)+'"'+(sameCompany(c,v)?" selected":"")+">"+esc(c)+"</option>";
   }).join("");
 }
 
@@ -328,6 +345,10 @@ function render(){
   view.innerHTML=(OFFLINE?offlineNotice():(READONLY?readonlyNotice():""))+(S.error?errorNotice():"")+
     (S.tab==="requests"?renderRequests():renderContracts());
   wire();
+  var sub=document.getElementById("brandSub");
+  if(sub)sub.textContent=(S.comp&&S.comp!=="all")
+    ? S.comp+" · согласование заявок на оплату"
+    : "ҶДММ «Авесто Гуруҳ» · согласование заявок на оплату";
   var btn=document.getElementById("meBtn");
   var s=S.session.role;
   btn.textContent=s?s.name:"Баромад · выйти";
@@ -353,10 +374,21 @@ function renderGate(){
       "в одном браузере. На рабочем сайте вход по логину и паролю.</p>";
   return '<div class="gatewrap"><form class="gatecard" autocomplete="on" onsubmit="return false">'+
     '<div class="gatehead"><div class="seal">А</div>'+
-    "<h1>Бюджети сармоягузорӣ</h1>"+
-    "<p>ҶДММ «Авесто Гуруҳ» · согласование заявок на оплату</p></div>"+
+    "<h1>Бюджети сармоягузорӣ</h1></div>"+
+    '<label class="f" for="gC">Ташкилот · организация</label>'+
+    '<select id="gC" style="margin-bottom:14px">'+
+    '<option value="all">Ҳама ташкилотҳо · все организации</option>'+
+    companyOptions(S.comp==="all"?lsGet("avesto.lastCompany"):S.comp)+"</select>"+
     (S.gateErr?'<div class="gateerr">'+esc(S.gateErr)+"</div>":"")+
     body+"</form></div>";
+}
+/* организация, выбранная на экране входа: ею ограничивается список заявок
+   и она же подставляется в новую заявку */
+function takeCompany(){
+  var c=document.getElementById("gC");
+  S.comp=c?c.value:"all";
+  if(S.comp!=="all")lsSet("avesto.lastCompany",S.comp); else lsSet("avesto.lastCompany","");
+  S.selReq=null;
 }
 function wireGate(){
   var go=document.getElementById("gIn"); if(!go)return;
@@ -368,7 +400,7 @@ function wireGate(){
     go.onclick=function(){
       var lg=u.value.trim(),pw=p.value;
       if(!lg||!pw){S.gateErr="Логин ва рамзро ворид кунед · введите логин и пароль";render();return;}
-      lsSet("avesto.lastLogin",lg);
+      lsSet("avesto.lastLogin",lg); takeCompany();
       S.gateErr=null; S.busy=true; render();
       apiPost("login",{login:lg,password:pw}).then(function(j){
         S.session=j.data; S.me=j.data.role.key; saveSession(S.session);
@@ -385,6 +417,7 @@ function wireGate(){
       var k=document.getElementById("gR").value,list=S.signers&&S.signers.length?S.signers:DEFAULT_SIGNERS,r=null;
       for(var i=0;i<list.length;i++)if(list[i].key===k)r=list[i];
       if(!r)return;
+      takeCompany();
       S.session={token:"",role:{key:r.key,name:r.name,posRu:r.posRu,posTj:r.posTj,order:r.order}};
       S.me=r.key; saveSession(S.session);
       if(S.loaded)render(); else reload();
@@ -411,15 +444,17 @@ function renderRequests(){
   var list=S.requests.slice().sort(function(a,b){return String(b.date||"").localeCompare(String(a.date||""));});
   var shown=list.filter(function(r){
     if(S.filter!=="all"&&derivedStatus(r)!==S.filter)return false;
-    if(S.comp!=="all"&&String(r.company||"")!==S.comp)return false;
+    if(S.comp!=="all"&&!sameCompany(r.company,S.comp))return false;
     return true;
   });
-  /* в выпадающем фильтре — только те организации, по которым заявки есть */
-  var used=[];
+  /* в выпадающем фильтре — организации, по которым заявки есть, плюс выбранная при входе */
+  var used=[],seenC={};
   list.forEach(function(r){
     var c=String(r.company||"").trim();
-    if(c&&used.indexOf(c)<0)used.push(c);
+    if(!c||seenC[compKey(c)])return;
+    seenC[compKey(c)]=1; used.push(c);
   });
+  if(S.comp!=="all"&&!seenC[compKey(S.comp)]){seenC[compKey(S.comp)]=1;used.push(S.comp);}
   used.sort(function(a,b){return a.localeCompare(b,"ru");});
   var sel=null;
   for(var i=0;i<shown.length;i++) if(shown[i].id===S.selReq)sel=shown[i];
@@ -436,7 +471,7 @@ function renderRequests(){
     (used.length>1?'<div class="compfilter"><select id="compSel" aria-label="Ташкилот · организация">'+
       '<option value="all"'+(S.comp==="all"?" selected":"")+">Ҳама ташкилотҳо · все организации</option>"+
       used.map(function(c){
-        return '<option value="'+esc(c)+'"'+(S.comp===c?" selected":"")+">"+esc(c)+"</option>";
+        return '<option value="'+esc(c)+'"'+(sameCompany(S.comp,c)?" selected":"")+">"+esc(c)+"</option>";
       }).join("")+"</select></div>":"")+
     (shown.length?'<ul class="list">'+shown.map(function(r){return reqRow(r,sel);}).join("")+"</ul>":
       '<div class="empty"><h3>Дархост нест</h3><p>'+
@@ -764,7 +799,11 @@ function wire(){
   els=view.querySelectorAll("[data-filter]");
   for(i=0;i<els.length;i++)(function(b){b.onclick=function(){S.filter=b.dataset.filter;render();};})(els[i]);
   var cs=document.getElementById("compSel");
-  if(cs)cs.onchange=function(){S.comp=cs.value;S.selReq=null;render();};
+  if(cs)cs.onchange=function(){
+    S.comp=cs.value; S.selReq=null;
+    lsSet("avesto.lastCompany",S.comp==="all"?"":S.comp);
+    render();
+  };
   els=view.querySelectorAll("[data-req]");
   for(i=0;i<els.length;i++)(function(b){b.onclick=function(){S.selReq=b.dataset.req;S.sheetFor=null;render();};})(els[i]);
   els=view.querySelectorAll("[data-con]");
@@ -884,7 +923,8 @@ function markPaid(r){
 function editRequest(r){
   var isNew=!r;
   var d=r?JSON.parse(JSON.stringify(r)):{
-    number:"",date:new Date().toISOString().slice(0,10),company:'ҶДММ «Мармарӣ»',
+    number:"",date:new Date().toISOString().slice(0,10),
+    company:(S.comp&&S.comp!=="all")?S.comp:'ҶДММ «Мармарӣ»',
     contractId:S.contracts[0]?S.contracts[0].id:"",purpose:"",purposeShort:"",
     currency:"EUR",rate:10.81,items:[{name:"",unit:"евро",qty:1,price:0}],approvals:{}
   };
@@ -1614,6 +1654,7 @@ function loadFromSheet(id){
 /* ═══ запуск ═══ */
 S.session=loadSession();
 S.me=S.session?S.session.role.key:null;
+if(S.session)S.comp=lsGet("avesto.lastCompany")||"all";   // организация, выбранная при входе
 var foot=document.getElementById("footText");
 if(foot&&CFG.FOOTER)foot.textContent=CFG.FOOTER;
 render();
