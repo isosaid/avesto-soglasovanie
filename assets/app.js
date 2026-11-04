@@ -289,9 +289,7 @@ function renderGate(){
       '<label class="f" for="gP" style="margin-top:14px">Рамз · пароль</label>'+
       '<input id="gP" type="password" autocomplete="current-password">'+
       '<button class="btn pri wide" id="gIn"'+(S.busy?" disabled":"")+">"+
-      (S.busy?"Санҷиш…":"Даромадан · войти")+"</button>"+
-      '<p class="hint">Логин и пароль выдаёт отдел автоматизации холдинга. '+
-      "После входа визы ставятся сразу — ничего вводить больше не нужно.</p>"
+      (S.busy?"Санҷиш…":"Даромадан · войти")+"</button>"
     : '<label class="f" for="gR">Вазифа · должность</label>'+
       '<select id="gR">'+list.map(function(r){
         return '<option value="'+esc(r.key)+'">'+esc(r.name)+" — "+esc(r.posRu)+"</option>";
