@@ -1299,11 +1299,34 @@ function exportRegistry(){
   XLSX.utils.book_append_sheet(wb,ws,"общ");
   var out=XLSX.write(wb,{bookType:"xlsx",type:"array"});
   var blob=new Blob([out],{type:"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"});
-  var url=URL.createObjectURL(blob), a=document.createElement("a");
-  a.href=url; a.download="Мархилаи-2 — реестр "+new Date().toISOString().slice(0,10)+".xlsx";
-  document.body.appendChild(a); a.click(); document.body.removeChild(a);
-  setTimeout(function(){URL.revokeObjectURL(url);},1500);
-  toast("Реестр выгружен: "+list.length+" шартнома");
+  var fname="Мархилаи-2 — реестр "+new Date().toISOString().slice(0,10)+".xlsx";
+  saveFile(blob,fname,list.length);
+}
+/* Обычная страница скачивает ссылкой; страница, открытая внутри Claude,
+   отдаёт файл только через механизм площадки. */
+function saveFile(blob,fname,count){
+  var done=function(){toast("Реестр выгружен: "+count+" шартнома");};
+  var fail=function(){toast("Боргирӣ нашуд · не удалось выгрузить файл",true);};
+  if(window.claude&&window.claude.use){
+    window.claude.use("downloads").then(function(d){
+      if(!d)return linkSave(blob,fname)?done():fail();
+      d.save({filename:fname,data:blob}).then(done).catch(function(e){
+        if(e&&e.code==="declined")return;
+        if(!linkSave(blob,fname))fail();
+      });
+    }).catch(function(){ linkSave(blob,fname)?done():fail(); });
+    return;
+  }
+  linkSave(blob,fname)?done():fail();
+}
+function linkSave(blob,fname){
+  try{
+    var url=URL.createObjectURL(blob), a=document.createElement("a");
+    a.href=url; a.download=fname;
+    document.body.appendChild(a); a.click(); document.body.removeChild(a);
+    setTimeout(function(){URL.revokeObjectURL(url);},1500);
+    return true;
+  }catch(e){ return false; }
 }
 
 /* ═══ чтение опубликованной таблицы (без Apps Script) ═══ */
