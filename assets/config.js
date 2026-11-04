@@ -17,7 +17,7 @@
  * а пополнять их можно кнопкой «Импорт Excel».
  */
 window.AVESTO_CONFIG = {
-  API_URL: "",
+  API_URL: "https://script.google.com/macros/s/AKfycbwLbcZvAkFyF4K3jKv2kLOC3Lk2138tKvW3L8Q_jSqJe42X05TJjfynuq10DAuwvl_F/exec",
   SHEET_ID: "",
   ORG: "ҶДММ «Авесто Гуруҳ»",
   FOOTER: "Разработано Отделом автоматизации холдинга ООО «Авесто Групп» · ISJ"
