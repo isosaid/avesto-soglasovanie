@@ -105,8 +105,16 @@ function readAll(key) {
   return out;
 }
 
+/**
+ * Даты отдаём строкой «гггг-мм-дд» в часовом поясе таблицы.
+ * Через getScriptTimeZone дата уезжала на день: пояс скрипта и пояс
+ * таблицы разные, и 10 июня превращалось в 9 июня 19:00 UTC.
+ */
 function norm(v) {
-  if (v instanceof Date) return Utilities.formatDate(v, Session.getScriptTimeZone(), 'yyyy-MM-dd');
+  if (v && typeof v.getTime === 'function' && !isNaN(v.getTime())) {
+    var tz = book().getSpreadsheetTimeZone() || Session.getScriptTimeZone();
+    return Utilities.formatDate(v, tz, 'yyyy-MM-dd');
+  }
   return v;
 }
 
