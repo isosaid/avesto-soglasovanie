@@ -14,7 +14,8 @@ var SHEETS = {
   requests:  'Дархостҳо',
   items:     'Сатрҳо',
   approvals: 'Имзоҳо',
-  signers:   'Имзокунандагон'
+  signers:   'Имзокунандагон',
+  budget:    'Буҷет'
 };
 
 var COLS = {
@@ -23,10 +24,12 @@ var COLS = {
               'alloc2Rate','alloc2Amount','alloc2Tjs','allocTotal',
               'plan1Cond','plan1Sum','plan2Cond','plan2Sum','plan3Cond','plan3Sum'],
   payments:  ['id','contractId','amount','date','rate','tjs','note','requestId'],
-  requests:  ['id','number','date','company','contractId','currency','rate','purpose','purposeShort','submittedAt','paidAt','createdAt'],
+  requests:  ['id','number','date','company','contractId','currency','rate','purpose','purposeShort','submittedAt','paidAt','createdAt','code'],
   items:     ['id','requestId','name','unit','qty','price'],
   approvals: ['id','requestId','roleKey','decision','at','byName','comment'],
-  signers:   ['key','posTj','posRu','name','login','password','order']
+  signers:   ['key','posTj','posRu','name','login','password','order'],
+  // план инвестиционного бюджета: строка на организацию, год и код расхода
+  budget:    ['id','company','year','code','m1','m2','m3','m4','m5','m6','m7','m8','m9','m10','m11','m12']
 };
 
 /* ─────────────────────────── вход ─────────────────────────── */
@@ -62,6 +65,7 @@ function doPost(e) {
       case 'login':         out = login(p); break;
       case 'logout':        out = logout(p); break;
       case 'changePassword': out = changePassword(p); break;
+      case 'saveBudget':    out = saveBudget(p); break;
       default: throw new Error('Амали номаълум · неизвестное действие: ' + action);
     }
     return json({ok: true, data: out, state: bootstrap()});
@@ -169,6 +173,7 @@ function bootstrap() {
   var items     = readAll('items');
   var approvals = readAll('approvals');
   var signers   = readAll('signers');
+  var budget    = readAll('budget');
 
   contracts.forEach(function (c) {
     c.rate = Number(c.rate) || 0;
@@ -217,7 +222,45 @@ function bootstrap() {
               order: Number(s.order) || 0};
     });
 
-  return {contracts: contracts, requests: requests, signers: publicSigners, serverTime: new Date().toISOString()};
+  budget.forEach(function (b) {
+    b.year = Number(b.year) || 0;
+    for (var m = 1; m <= 12; m++) b['m' + m] = Number(b['m' + m]) || 0;
+  });
+
+  return {contracts: contracts, requests: requests, signers: publicSigners,
+          budget: budget, serverTime: new Date().toISOString()};
+}
+
+/**
+ * План инвестиционного бюджета: по строке на организацию, год и код расхода.
+ * Приходит целиком за год — переписываем только строки этой организации и года.
+ */
+function saveBudget(p) {
+  auth(p);
+  var company = String(p.company || '').trim();
+  var year = Number(p.year) || 0;
+  if (!company) throw new Error('Ташкилот интихоб нашуд · не выбрана организация');
+  if (!year) throw new Error('Сол нишон дода нашуд · не указан год');
+
+  var rows = readAll('budget');
+  var keep = rows.filter(function (b) {
+    return !(String(b.company) === company && Number(b.year) === year);
+  });
+
+  var fresh = (p.rows || []).map(function (b) {
+    var o = {id: b.id || uid('b'), company: company, year: year, code: String(b.code || '')};
+    for (var m = 1; m <= 12; m++) o['m' + m] = Number(b['m' + m]) || 0;
+    return o;
+  });
+
+  var all = keep.concat(fresh);
+  var sh = sheet('budget');
+  if (sh.getLastRow() > 1) sh.getRange(2, 1, sh.getLastRow() - 1, COLS.budget.length).clearContent();
+  if (all.length) {
+    sh.getRange(2, 1, all.length, COLS.budget.length)
+      .setValues(all.map(function (b) { return toRow('budget', b); }));
+  }
+  return {saved: fresh.length};
 }
 
 /* ─────────────────────── вход и сессии ───────────────────────
@@ -372,7 +415,8 @@ function saveRequest(p) {
     contractId: r.contractId || '', currency: r.currency || '', rate: Number(r.rate) || 0,
     purpose: r.purpose || '', purposeShort: r.purposeShort || '',
     submittedAt: existing ? existing.submittedAt : '', paidAt: existing ? existing.paidAt : '',
-    createdAt: existing ? existing.createdAt : new Date().toISOString()
+    createdAt: existing ? existing.createdAt : new Date().toISOString(),
+    code: r.code || ''
   });
 
   removeWhere('items', 'requestId', r.id);

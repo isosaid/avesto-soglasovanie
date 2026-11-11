@@ -83,6 +83,23 @@ function companyOptions(cur){
   }).join("");
 }
 
+/* ─── статьи инвестиционного бюджета (лист «КОД» из буҷети 2026) ─── */
+var BUDGET_CODES = [
+  {code:"1000", name:"Хароҷотҳои сохтмонӣ",    ru:"Строительные расходы"},
+  {code:"1010", name:"Закуп",                   ru:"Закуп"},
+  {code:"1020", name:"Ҳаққи кор",               ru:"Оплата работ"},
+  {code:"2000", name:"Воситаҳои асосӣ",         ru:"Основные средства"},
+  {code:"2010", name:"Оборудование",            ru:"Оборудование"},
+  {code:"2020", name:"Техника ва лавозимот",    ru:"Техника и принадлежности"},
+  {code:"3000", name:"Хароҷотҳои пешазлоиҳавӣ", ru:"Предпроектные расходы"},
+  {code:"4000", name:"Дигар хароҷотҳо",         ru:"Прочие расходы"}
+];
+var MONTHS_TJ = ["Январ","Феврал","Март","Апрел","Май","Июн","Июл","Август","Сентябр","Октябр","Ноябр","Декабр"];
+function codeName(code){
+  for(var i=0;i<BUDGET_CODES.length;i++)if(BUDGET_CODES[i].code===String(code))return BUDGET_CODES[i].name;
+  return "";
+}
+
 /* ─── маршрут по умолчанию (пока справочник не пришёл с сервера) ─── */
 var DEFAULT_SIGNERS = [
   {key:"branch",    posTj:"Муовини директори генералӣ оид ба самти паррандапарварӣ ҶДММ «Мармарӣ»", posRu:"Зам. ген. директора по птицеводству", name:"Ҳакимов З.", order:1},
@@ -214,8 +231,9 @@ function signerBy(key){
 
 /* ═══ состояние ═══ */
 var S={
-  tab:"requests", filter:"all",
-  contracts:[], requests:[], signers:DEFAULT_SIGNERS.slice(),
+  tab:"budget", filter:"all",
+  contracts:[], requests:[], budget:[], signers:DEFAULT_SIGNERS.slice(),
+  bYear:new Date().getFullYear(),
   selReq:null, selCon:null, sheetFor:null,
   q:"", cur:"all", rest:"all", comp:"all", conMode:"cards",
   session:null, me:null, busy:false, loaded:false, error:null, gateErr:null
@@ -248,16 +266,18 @@ function apiPost(action,payload){
 function localLoad(){
   try{
     var raw=lsGet("avesto.soglasovanie.data");
-    if(raw){var d=JSON.parse(raw);S.contracts=d.contracts||[];S.requests=d.requests||[];}
+    if(raw){var d=JSON.parse(raw);S.contracts=d.contracts||[];S.requests=d.requests||[];S.budget=d.budget||[];}
   }catch(e){}
 }
 function localSave(){
-  try{lsSet("avesto.soglasovanie.data",JSON.stringify({contracts:S.contracts,requests:S.requests}));}catch(e){}
+  try{lsSet("avesto.soglasovanie.data",
+    JSON.stringify({contracts:S.contracts,requests:S.requests,budget:S.budget}));}catch(e){}
 }
 
 function applyState(d){
   S.contracts=d.contracts||[];
   S.requests=d.requests||[];
+  S.budget=d.budget||[];
   if(d.signers&&d.signers.length)S.signers=d.signers;
   S.loaded=true; S.error=null;
 }
@@ -343,7 +363,7 @@ function render(){
   document.body.classList.toggle("gate",gate);
   if(gate){ view.innerHTML=renderGate(); wireGate(); return; }
   view.innerHTML=(OFFLINE?offlineNotice():(READONLY?readonlyNotice():""))+(S.error?errorNotice():"")+
-    (S.tab==="requests"?renderRequests():renderContracts());
+    (S.tab==="budget"?renderBudget():S.tab==="requests"?renderRequests():renderContracts());
   wire();
   var sub=document.getElementById("brandSub");
   if(sub)sub.textContent=(S.comp&&S.comp!=="all")
@@ -520,6 +540,9 @@ function reqDoc(r){
       "<div><dt>Интиқолдиҳанда</dt><dd>"+esc(c.supplier)+(c.country?" · "+esc(c.country):"")+"</dd></div>"+
       '<div><dt>Бақия барои пардохт</dt><dd class="num">'+money(balance(c),c.currency)+"</dd></div></dl>":
       '<div class="hint" style="margin-top:12px">Шартнома пайваст нашуд · контракт не привязан</div>')+
+    '<dl class="kv" style="margin-top:14px"><div><dt>Рамзи буҷет</dt><dd>'+
+    (r.code?'<span class="mono">'+esc(r.code)+"</span> · "+esc(codeName(r.code))
+          :'<span style="color:var(--no)">нишон дода нашуд · код не указан</span>')+"</dd></div></dl>"+
     "</section>"+
 
     "<section><h3>Маблағ · позиции</h3>"+
@@ -636,6 +659,247 @@ function conMatches(c){
   if(S.rest==="over"&&balance(c)>=-0.0001)return false;
   return true;
 }
+
+/* ═══════════════ буҷети сармоягузорӣ ═══════════════
+ * Нақша вводится по статьям и месяцам, иҷроиш берётся из заявок:
+ * оплата по заявке с этим кодом попадает в месяц своей даты.
+ * Фарқият = нақша − иҷроиш.
+ */
+function inScope(company){ return S.comp==="all"||sameCompany(company,S.comp); }
+
+/* план по статье и месяцу (месяц 1..12), 0 — если не задан */
+function planOf(code,m){
+  var sum=0;
+  S.budget.forEach(function(b){
+    if(String(b.code)!==String(code))return;
+    if(Number(b.year)!==Number(S.bYear))return;
+    if(!inScope(b.company))return;
+    sum+=Number(b["m"+m])||0;
+  });
+  return sum;
+}
+
+/* Оплаты по заявке: платежи контракта, помеченные её номером. Если заявка
+   закрыта, но платежей не нашлось (контракт не указан) — берём саму заявку. */
+function reqPayments(r){
+  var out=[];
+  S.contracts.forEach(function(c){
+    (c.payments||[]).forEach(function(p){
+      if(String(p.requestId||"")!==String(r.id))return;
+      var t=Number(p.tjs)||(Number(p.amount)||0)*(Number(p.rate)||Number(c.rate)||0);
+      out.push({date:p.date||r.paidAt||"",tjs:t});
+    });
+  });
+  if(!out.length&&r.paidAt)out.push({date:r.paidAt,tjs:reqTotalTjs(r)});
+  return out;
+}
+function monthOf(d){
+  var s=String(d||"");
+  var m=/^(\d{4})-(\d{2})/.exec(s);
+  if(m)return {year:Number(m[1]),month:Number(m[2])};
+  m=/^(\d{2})\.(\d{2})\.(\d{4})/.exec(s);
+  if(m)return {year:Number(m[3]),month:Number(m[2])};
+  var dt=new Date(s);
+  if(!isNaN(dt.getTime()))return {year:dt.getFullYear(),month:dt.getMonth()+1};
+  return null;
+}
+/* иҷроиш по статье и месяцу */
+function factOf(code,m){
+  var sum=0;
+  S.requests.forEach(function(r){
+    if(String(r.code||"")!==String(code))return;
+    if(!inScope(r.company))return;
+    reqPayments(r).forEach(function(p){
+      var t=monthOf(p.date);
+      if(!t||t.year!==Number(S.bYear))return;
+      if(m&&t.month!==m)return;
+      sum+=p.tjs;
+    });
+  });
+  return sum;
+}
+/* заявки на согласовании и утверждённые, но ещё не оплаченные */
+function pipelineOf(code){
+  var sum=0;
+  S.requests.forEach(function(r){
+    if(String(r.code||"")!==String(code))return;
+    if(!inScope(r.company))return;
+    var st=derivedStatus(r);
+    if(st!=="review"&&st!=="approved")return;
+    var t=monthOf(r.date);
+    if(t&&t.year!==Number(S.bYear))return;
+    sum+=reqTotalTjs(r);
+  });
+  return sum;
+}
+function codesNoCode(){
+  var sum=0;
+  S.requests.forEach(function(r){
+    if(String(r.code||"")!=="")return;
+    if(!inScope(r.company))return;
+    sum+=reqTotalTjs(r);
+  });
+  return sum;
+}
+
+function renderBudget(){
+  var years={},nowY=new Date().getFullYear();
+  years[nowY]=1; years[S.bYear]=1;
+  S.budget.forEach(function(b){if(b.year)years[b.year]=1;});
+  S.requests.forEach(function(r){var t=monthOf(r.date);if(t)years[t.year]=1;});
+  var ylist=Object.keys(years).map(Number).sort();
+
+  var rows=BUDGET_CODES.map(function(c){
+    var plan=0,fact=0,mp=[],mf=[];
+    for(var m=1;m<=12;m++){
+      var p=planOf(c.code,m),f=factOf(c.code,m);
+      mp.push(p); mf.push(f); plan+=p; fact+=f;
+    }
+    return {c:c,plan:plan,fact:fact,mp:mp,mf:mf,pipe:pipelineOf(c.code)};
+  });
+  var tot={plan:0,fact:0,pipe:0,mp:[],mf:[]};
+  for(var m=0;m<12;m++){tot.mp[m]=0;tot.mf[m]=0;}
+  rows.forEach(function(r){
+    tot.plan+=r.plan; tot.fact+=r.fact; tot.pipe+=r.pipe;
+    for(var m=0;m<12;m++){tot.mp[m]+=r.mp[m];tot.mf[m]+=r.mf[m];}
+  });
+
+  var mode=S.bMode==="months"?"months":"year";
+  var head='<div class="bhead">'+
+    "<div><h2>Буҷети сармоягузорӣ</h2>"+
+    "<p>"+esc(S.comp==="all"?"ҳамаи ташкилотҳо · все организации":S.comp)+
+    " · соли "+esc(String(S.bYear))+"</p></div>"+
+    '<div class="btools">'+
+    '<select id="bYear">'+ylist.map(function(y){
+      return '<option value="'+y+'"'+(y===Number(S.bYear)?" selected":"")+">"+y+"</option>";
+    }).join("")+"</select>"+
+    '<div class="seg"><button data-bmode="year" aria-pressed="'+(mode==="year")+'">Сол</button>'+
+    '<button data-bmode="months" aria-pressed="'+(mode==="months")+'">Моҳҳо</button></div>'+
+    '<button class="btn" id="bEdit">Нақшаро таҳрир кардан</button></div></div>';
+
+  var body = mode==="year" ? budgetYear(rows,tot) : budgetMonths(rows,tot);
+
+  var orphan=codesNoCode();
+  var note=orphan>0?'<p class="hint bnote">Дархостҳо бе рамзи буҷет: '+nf(orphan,2)+
+    " сомонӣ — в бюджет не попадают, проставьте код в заявке.</p>":"";
+
+  return '<section class="panel budget">'+head+body+note+"</section>";
+}
+
+function pct(f,p){ return p>0?(f/p*100):(f>0?null:0); }
+function pctCell(f,p){
+  var v=pct(f,p);
+  if(v===null)return '<td class="r muted">—</td>';
+  var cls=v>100?"over":(v>=90?"ok":"");
+  return '<td class="r pct '+cls+'">'+nf(v,1)+" %</td>";
+}
+function diffCell(d){
+  return '<td class="r '+(d<0?"over":"")+'">'+nf(d,2)+"</td>";
+}
+
+function budgetYear(rows,tot){
+  var h='<table class="grid bgrid"><thead><tr>'+
+    "<th>Рамз</th><th>Номгӯй</th><th class=r>Нақша</th><th class=r>Иҷроиш</th>"+
+    "<th class=r>Фарқият</th><th class=r>Иҷроиш, %</th><th class=r>Дар раванд</th></tr></thead><tbody>";
+  rows.forEach(function(r){
+    h+="<tr><td class=mono>"+esc(r.c.code)+"</td><td>"+esc(r.c.name)+
+       '<span class="sub">'+esc(r.c.ru)+"</span></td>"+
+       '<td class="r">'+nf(r.plan,2)+"</td>"+
+       '<td class="r">'+nf(r.fact,2)+"</td>"+
+       diffCell(r.plan-r.fact)+pctCell(r.fact,r.plan)+
+       '<td class="r muted">'+(r.pipe?nf(r.pipe,2):"—")+"</td></tr>";
+  });
+  h+='</tbody><tfoot><tr><td></td><td>Ҳамагӣ</td>'+
+     '<td class="r">'+nf(tot.plan,2)+"</td>"+
+     '<td class="r">'+nf(tot.fact,2)+"</td>"+
+     diffCell(tot.plan-tot.fact)+pctCell(tot.fact,tot.plan)+
+     '<td class="r">'+(tot.pipe?nf(tot.pipe,2):"—")+"</td></tr></tfoot></table>";
+  return '<div class="tablewrap">'+h+"</div>";
+}
+
+function budgetMonths(rows,tot){
+  var h='<table class="grid bgrid months"><thead><tr><th rowspan=2>Рамз</th><th rowspan=2>Номгӯй</th>';
+  for(var m=0;m<12;m++)h+='<th colspan=2 class="r mgrp">'+MONTHS_TJ[m]+"</th>";
+  h+='<th colspan=2 class="r mgrp">Ҳамагӣ</th></tr><tr>';
+  for(m=0;m<12;m++)h+='<th class="r sm">Нақша</th><th class="r sm">Иҷроиш</th>';
+  h+='<th class="r sm">Нақша</th><th class="r sm">Иҷроиш</th></tr></thead><tbody>';
+  rows.forEach(function(r){
+    h+="<tr><td class=mono>"+esc(r.c.code)+"</td><td>"+esc(r.c.name)+"</td>";
+    for(var m=0;m<12;m++){
+      h+='<td class="r sm">'+(r.mp[m]?nf(r.mp[m],0):"")+"</td>"+
+         '<td class="r sm fact">'+(r.mf[m]?nf(r.mf[m],0):"")+"</td>";
+    }
+    h+='<td class="r">'+nf(r.plan,0)+'</td><td class="r fact">'+nf(r.fact,0)+"</td></tr>";
+  });
+  h+='</tbody><tfoot><tr><td></td><td>Ҳамагӣ</td>';
+  for(m=0;m<12;m++)h+='<td class="r sm">'+(tot.mp[m]?nf(tot.mp[m],0):"")+"</td>"+
+    '<td class="r sm fact">'+(tot.mf[m]?nf(tot.mf[m],0):"")+"</td>";
+  h+='<td class="r">'+nf(tot.plan,0)+'</td><td class="r fact">'+nf(tot.fact,0)+
+     "</td></tr></tfoot></table>";
+  return '<div class="tablewrap scrollx">'+h+"</div>";
+}
+
+/* ── ввод плана: статьи × месяцы ── */
+function editBudget(){
+  if(S.comp==="all"){
+    toast("Аввал ташкилотро интихоб кунед · сначала выберите организацию",true);
+    return;
+  }
+  var cur={};
+  S.budget.forEach(function(b){
+    if(Number(b.year)!==Number(S.bYear)||!sameCompany(b.company,S.comp))return;
+    cur[String(b.code)]=b;
+  });
+  var h='<div class="bedit"><table class="grid"><thead><tr><th>Рамз</th><th>Номгӯй</th>';
+  for(var m=0;m<12;m++)h+='<th class="r sm">'+MONTHS_TJ[m].slice(0,3)+"</th>";
+  h+='<th class="r">Ҳамагӣ</th></tr></thead><tbody>';
+  BUDGET_CODES.forEach(function(c){
+    var b=cur[c.code]||{};
+    h+='<tr data-code="'+c.code+'"><td class=mono>'+esc(c.code)+"</td><td>"+esc(c.name)+"</td>";
+    for(var m=1;m<=12;m++){
+      h+='<td class="sm"><input class="bin" data-m="'+m+'" inputmode="decimal" value="'+
+         (Number(b["m"+m])||0?nf(Number(b["m"+m]),0).replace(/\s/g,""):"")+'"></td>';
+    }
+    h+='<td class="r rowsum">0</td></tr>';
+  });
+  h+="</tbody></table></div>";
+
+  modal({
+    title:"Нақшаи буҷет · план на "+S.bYear+" — "+S.comp,
+    wide:true,
+    body:h+'<p class="hint">Суммы в сомони. Пустая клетка — ноль. Иҷроиш считается от заявок и здесь не вводится.</p>',
+    okText:"Нигоҳ доштан",
+    onOpen:function(root){
+      var recalc=function(){
+        var trs=root.querySelectorAll("tr[data-code]");
+        for(var i=0;i<trs.length;i++){
+          var ins=trs[i].querySelectorAll(".bin"),sum=0;
+          for(var j=0;j<ins.length;j++)sum+=cellNum(ins[j].value);
+          trs[i].querySelector(".rowsum").textContent=nf(sum,0);
+        }
+      };
+      root.addEventListener("input",recalc);
+      recalc();
+    },
+    onOk:function(root){
+      var rows=[],trs=root.querySelectorAll("tr[data-code]");
+      for(var i=0;i<trs.length;i++){
+        var code=trs[i].dataset.code,o={code:code},any=false;
+        var ins=trs[i].querySelectorAll(".bin");
+        for(var j=0;j<ins.length;j++){
+          var v=cellNum(ins[j].value);
+          o["m"+ins[j].dataset.m]=v;
+          if(v)any=true;
+        }
+        var old=cur[code];
+        if(old)o.id=old.id;
+        if(any||old)rows.push(o);
+      }
+      send("saveBudget",{company:S.comp,year:Number(S.bYear),rows:rows},"Нақша нигоҳ дошта шуд");
+    }
+  });
+}
+
 function renderContracts(){
   var all=S.contracts.slice().sort(function(a,b){return String(b.date||"").localeCompare(String(a.date||""));});
   var list=all.filter(conMatches);
@@ -835,6 +1099,13 @@ function wire(){
   for(i=0;i<els.length;i++)(function(b){b.onclick=function(){S.conMode=b.dataset.mode;render();};})(els[i]);
   els=view.querySelectorAll("[data-act]");
   for(i=0;i<els.length;i++)(function(b){b.onclick=function(){act(b.dataset.act,b.dataset.id);};})(els[i]);
+  var be=document.getElementById("bEdit"); if(be)be.onclick=editBudget;
+  var by=document.getElementById("bYear");
+  if(by)by.onchange=function(){S.bYear=Number(by.value);render();};
+  els=view.querySelectorAll("[data-bmode]");
+  for(i=0;i<els.length;i++)(function(b){
+    b.onclick=function(){S.bMode=b.dataset.bmode;render();};
+  })(els[i]);
   var nr=document.getElementById("newReq"); if(nr)nr.onclick=function(){editRequest(null);};
   var nc=document.getElementById("newCon"); if(nc)nc.onclick=function(){editContract(null);};
 }
@@ -925,6 +1196,7 @@ function editRequest(r){
   var d=r?JSON.parse(JSON.stringify(r)):{
     number:"",date:new Date().toISOString().slice(0,10),
     company:(S.comp&&S.comp!=="all")?S.comp:'ҶДММ «Мармарӣ»',
+    code:"",
     contractId:S.contracts[0]?S.contracts[0].id:"",purpose:"",purposeShort:"",
     currency:"EUR",rate:10.81,items:[{name:"",unit:"евро",qty:1,price:0}],approvals:{}
   };
@@ -938,6 +1210,11 @@ function editRequest(r){
       '<div><label class="f">Сана</label><input id="fDate" type="date" value="'+esc(d.date)+'"></div>'+
       '<div><label class="f">Ташкилот</label><select id="fComp">'+companyOptions(d.company)+"</select></div></div>"+
       '<div><label class="f">Шартнома</label><select id="fCon"><option value="">— бе шартнома —</option>'+opts+"</select></div>"+
+      '<div><label class="f">Рамзи буҷет · статья бюджета</label><select id="fCode">'+
+      '<option value="">— бе рамз —</option>'+BUDGET_CODES.map(function(c){
+        return '<option value="'+c.code+'"'+(String(d.code||"")===c.code?" selected":"")+">"+
+          c.code+" — "+esc(c.name)+"</option>";
+      }).join("")+"</select></div>"+
       '<div class="fgrid"><div><label class="f">Асъор</label><input id="fCur" value="'+esc(d.currency)+'"></div>'+
       '<div><label class="f">Курс, сомонӣ</label><input id="fRate" class="num" value="'+esc(d.rate)+'"></div></div>'+
       '<div><label class="f">Асос · обоснование</label><textarea id="fPurp">'+esc(d.purpose)+"</textarea></div>"+
@@ -977,6 +1254,7 @@ function editRequest(r){
       d.date=root.querySelector("#fDate").value;
       d.company=root.querySelector("#fComp").value;
       d.contractId=root.querySelector("#fCon").value;
+      d.code=root.querySelector("#fCode").value;
       d.currency=root.querySelector("#fCur").value.trim();
       d.rate=Number(root.querySelector("#fRate").value)||0;
       d.purpose=root.querySelector("#fPurp").value.trim();
