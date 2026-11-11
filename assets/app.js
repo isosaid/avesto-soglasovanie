@@ -666,6 +666,14 @@ function conMatches(c){
  * Фарқият = нақша − иҷроиш.
  */
 function inScope(company){ return S.comp==="all"||sameCompany(company,S.comp); }
+/* Код заявки: свой, а если не проставлен — берётся у контракта.
+   Так статья бюджета задаётся один раз на контракт и работает для всех
+   заявок по нему. */
+function effCode(r){
+  if(r.code)return String(r.code);
+  var c=findCon(r.contractId);
+  return c&&c.code?String(c.code):"";
+}
 
 /* план по статье и месяцу (месяц 1..12), 0 — если не задан */
 function planOf(code,m){
@@ -707,7 +715,7 @@ function monthOf(d){
 function factOf(code,m){
   var sum=0;
   S.requests.forEach(function(r){
-    if(String(r.code||"")!==String(code))return;
+    if(effCode(r)!==String(code))return;
     if(!inScope(r.company))return;
     reqPayments(r).forEach(function(p){
       var t=monthOf(p.date);
@@ -722,7 +730,7 @@ function factOf(code,m){
 function pipelineOf(code){
   var sum=0;
   S.requests.forEach(function(r){
-    if(String(r.code||"")!==String(code))return;
+    if(effCode(r)!==String(code))return;
     if(!inScope(r.company))return;
     var st=derivedStatus(r);
     if(st!=="review"&&st!=="approved")return;
@@ -735,11 +743,75 @@ function pipelineOf(code){
 function codesNoCode(){
   var sum=0;
   S.requests.forEach(function(r){
-    if(String(r.code||"")!=="")return;
+    if(effCode(r)!=="")return;
     if(!inScope(r.company))return;
     sum+=reqTotalTjs(r);
   });
   return sum;
+}
+
+
+/* Что стоит за статьёй: контракты с этим кодом и заявки по ним. */
+function codeContracts(code){
+  var out=[],seen={};
+  S.contracts.forEach(function(c){
+    if(String(c.code||"")===String(code))
+      {out.push(c);seen[c.id]=1;}
+  });
+  // контракт без кода попадает сюда, если по нему есть заявка с этим кодом
+  S.requests.forEach(function(r){
+    if(effCode(r)!==String(code)||!inScope(r.company))return;
+    var c=findCon(r.contractId);
+    if(c&&!seen[c.id]){out.push(c);seen[c.id]=1;}
+  });
+  return out;
+}
+function codeRequests(code){
+  return S.requests.filter(function(r){
+    return effCode(r)===String(code)&&inScope(r.company);
+  }).sort(function(a,b){return String(a.date||"").localeCompare(String(b.date||""));});
+}
+
+function openCode(code){
+  var cons=codeContracts(code),reqs=codeRequests(code);
+  var plan=0; for(var m=1;m<=12;m++)plan+=planOf(code,m);
+  var fact=factOf(code,0),pipe=pipelineOf(code);
+
+  var h='<dl class="kv"><div><dt>Нақша</dt><dd class="num">'+nf(plan,2)+"</dd></div>"+
+    '<div><dt>Иҷроиш</dt><dd class="num">'+nf(fact,2)+"</dd></div>"+
+    '<div><dt>Фарқият</dt><dd class="num" style="color:'+(plan-fact<0?"var(--no)":"var(--ok)")+'">'+
+    nf(plan-fact,2)+"</dd></div></dl>"+
+    (pipe?'<p class="hint">Дар раванд: '+nf(pipe,2)+" сомонӣ</p>":"");
+
+  h+="<h4 class=dh>Шартномаҳо · контракты</h4>"+
+    (cons.length?'<div class="tablescroll"><table class="grid"><thead><tr><th>№</th><th>Интиқолдиҳанда</th>'+
+      '<th class=r>Маблағ</th><th class=r>Пардохтшуда, сомонӣ</th></tr></thead><tbody>'+
+      cons.map(function(c){
+        return '<tr><td class=mono>'+esc(c.no)+"</td><td>"+esc(c.supplier||"")+"</td>"+
+          '<td class="r">'+nf(c.invoice,2)+" "+esc(c.currency||"")+"</td>"+
+          '<td class="r">'+nf(paidTjs(c),2)+"</td></tr>";
+      }).join("")+"</tbody></table></div>"
+     :'<p class="hint">Шартнома нест · контрактов нет</p>');
+
+  h+="<h4 class=dh>Дархостҳо · заявки</h4>"+
+    (reqs.length?'<div class="tablescroll"><table class="grid"><thead><tr><th>№</th><th>Сана</th><th>Ҳолат</th>'+
+      '<th class=r>Маблағ, сомонӣ</th><th class=r>Пардохтшуда</th></tr></thead><tbody>'+
+      reqs.map(function(r){
+        var pay=reqPayments(r).reduce(function(s,p){return s+p.tjs;},0);
+        return '<tr><td class=mono>'+esc(r.number)+"</td><td>"+dRu(r.date)+"</td>"+
+          "<td>"+esc((STATUS[derivedStatus(r)]||{}).short||"")+"</td>"+
+          '<td class="r">'+nf(reqTotalTjs(r),2)+"</td>"+
+          '<td class="r">'+(pay?nf(pay,2):"—")+"</td></tr>";
+      }).join("")+"</tbody></table></div>"
+     :'<p class="hint">Дархост нест · заявок нет</p>');
+
+  modal({
+    title:code+" · "+codeName(code),
+    wide:true,
+    body:h,
+    okText:"Пӯшидан",
+    noCancel:true
+  });
 }
 
 function renderBudget(){
@@ -779,11 +851,14 @@ function renderBudget(){
 
   var body = mode==="year" ? budgetYear(rows,tot) : budgetMonths(rows,tot);
 
+  var hint='<p class="hint bhint">Сатрро пахш кунед — шартномаҳо ва дархостҳои он · '+
+    "нажмите строку, чтобы увидеть контракты и заявки статьи</p>";
   var orphan=codesNoCode();
   var note=orphan>0?'<p class="hint bnote">Дархостҳо бе рамзи буҷет: '+nf(orphan,2)+
     " сомонӣ — в бюджет не попадают, проставьте код в заявке.</p>":"";
 
-  return '<section class="panel budget">'+head+body+note+"</section>";
+  return '<section class="panel budget">'+head+body+
+    (S.bMode==="months"?"":hint)+note+"</section>";
 }
 
 function pct(f,p){ return p>0?(f/p*100):(f>0?null:0); }
@@ -802,7 +877,7 @@ function budgetYear(rows,tot){
     "<th>Рамз</th><th>Номгӯй</th><th class=r>Нақша</th><th class=r>Иҷроиш</th>"+
     "<th class=r>Фарқият</th><th class=r>Иҷроиш, %</th><th class=r>Дар раванд</th></tr></thead><tbody>";
   rows.forEach(function(r){
-    h+="<tr><td class=mono>"+esc(r.c.code)+"</td><td>"+esc(r.c.name)+
+    h+='<tr class="clickrow" data-code="'+r.c.code+'"><td class=mono>'+esc(r.c.code)+"</td><td>"+esc(r.c.name)+
        '<span class="sub">'+esc(r.c.ru)+"</span></td>"+
        '<td class="r">'+nf(r.plan,2)+"</td>"+
        '<td class="r">'+nf(r.fact,2)+"</td>"+
@@ -1001,6 +1076,8 @@ function conDoc(c){
     '<dl class="kv"><div><dt>Объекти дахлдор</dt><dd>'+esc(c.object||"—")+"</dd></div>"+
     "<div><dt>Маҳсулот</dt><dd>"+esc(c.product||"—")+"</dd></div>"+
     '<div><dt>Асъор / курс</dt><dd>'+esc(c.currency||"—")+' · <span class="num">'+nf(c.rate,4)+"</span></dd></div>"+
+    '<div><dt>Рамзи буҷет</dt><dd>'+(c.code?'<span class="mono">'+esc(c.code)+"</span> · "+
+      esc(codeName(c.code)):"—")+"</dd></div>"+
     "<div><dt>Бонки пардохткунанда</dt><dd>"+esc(c.bank||"—")+"</dd></div>"+
     '<div><dt>Маблағи ИНВОЙС</dt><dd class="num">'+money(inv,c.currency)+"</dd></div>"+
     "<div><dt>ГТД</dt><dd>"+esc(c.gtd||"—")+"</dd></div>"+
@@ -1100,6 +1177,10 @@ function wire(){
   els=view.querySelectorAll("[data-act]");
   for(i=0;i<els.length;i++)(function(b){b.onclick=function(){act(b.dataset.act,b.dataset.id);};})(els[i]);
   var be=document.getElementById("bEdit"); if(be)be.onclick=editBudget;
+  els=view.querySelectorAll("tr.clickrow[data-code]");
+  for(i=0;i<els.length;i++)(function(t){
+    t.onclick=function(){openCode(t.dataset.code);};
+  })(els[i]);
   var by=document.getElementById("bYear");
   if(by)by.onchange=function(){S.bYear=Number(by.value);render();};
   els=view.querySelectorAll("[data-bmode]");
@@ -1318,6 +1399,11 @@ function editContract(c){
       '<p class="hint" id="planHint"></p></fieldset>'+
 
       '<fieldset class="grp"><legend>Иловагӣ</legend><div class="fgrid">'+
+      '<div><label class="f">Рамзи буҷет · статья</label><select id="cCode">'+
+      '<option value="">— бе рамз —</option>'+BUDGET_CODES.map(function(x){
+        return '<option value="'+x.code+'"'+(String(d.code||"")===x.code?" selected":"")+">"+
+          x.code+" — "+esc(x.name)+"</option>";
+      }).join("")+"</select></div>"+
       '<div><label class="f">Бонки пардохткунанда</label><input id="cBank" value="'+esc(d.bank)+'"></div>'+
       '<div><label class="f">ГТД</label><input id="cGtd" value="'+esc(d.gtd)+'"></div>'+
       '<div><label class="f">Файли шартнома</label><input id="cFile" value="'+esc(d.file||"")+
@@ -1342,6 +1428,7 @@ function editContract(c){
     },
     onOk:function(root){
       d.no=root.querySelector("#cNo").value.trim();
+      d.code=root.querySelector("#cCode").value;
       d.date=root.querySelector("#cDate").value;
       d.supplier=root.querySelector("#cSup").value.trim();
       d.country=root.querySelector("#cCty").value.trim();

@@ -22,7 +22,7 @@ var COLS = {
   contracts: ['id','no','date','supplier','country','object','product','currency','rate','bank','invoice','gtd','file',
               'reqAmount','reqTjs','allocAmount','allocTjs','req2Rate','req2Amount','req2Tjs',
               'alloc2Rate','alloc2Amount','alloc2Tjs','allocTotal',
-              'plan1Cond','plan1Sum','plan2Cond','plan2Sum','plan3Cond','plan3Sum'],
+              'plan1Cond','plan1Sum','plan2Cond','plan2Sum','plan3Cond','plan3Sum','code'],
   payments:  ['id','contractId','amount','date','rate','tjs','note','requestId'],
   requests:  ['id','number','date','company','contractId','currency','rate','purpose','purposeShort','submittedAt','paidAt','createdAt','code'],
   items:     ['id','requestId','name','unit','qty','price'],
@@ -381,7 +381,7 @@ function contractRow(c) {
     allocAmount: n(c.allocAmount), allocTjs: n(c.allocTjs),
     req2Rate: n(c.req2Rate), req2Amount: n(c.req2Amount), req2Tjs: n(c.req2Tjs),
     alloc2Rate: n(c.alloc2Rate), alloc2Amount: n(c.alloc2Amount), alloc2Tjs: n(c.alloc2Tjs),
-    allocTotal: n(c.allocTotal)
+    allocTotal: n(c.allocTotal), code: c.code || ''
   };
   var plan = c.plan || [];
   for (var i = 0; i < 3; i++) {

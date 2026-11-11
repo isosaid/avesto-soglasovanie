@@ -346,3 +346,10 @@ table.bgrid td.fact{color:var(--accent)}
   font-family:var(--mono)}
 .bedit td.rowsum{font-weight:700;white-space:nowrap}
 .bedit{overflow-x:auto;max-height:60vh}
+table.bgrid tr.clickrow{cursor:pointer}
+table.bgrid tr.clickrow:hover td{background:var(--accent-soft)}
+h4.dh{font-family:var(--serif);font-size:15px;margin:18px 0 8px}
+.modal .grid{width:100%;font-size:12.5px}
+.bhint{padding:0 20px 14px;margin-top:-6px}
+.modal .tablescroll{overflow-x:auto;margin-top:4px}
+.modal .tablescroll table{min-width:520px}
