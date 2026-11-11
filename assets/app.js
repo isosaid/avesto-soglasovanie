@@ -186,6 +186,12 @@ function balance(c){return (Number(c.invoice)||0)-paidSum(c);}
 /* Порядок виз свободный: первые четверо подписывают когда угодно,
    ген. директор холдинга утверждает последним — только после остальных. */
 function finalKey(){return S.signers.length?S.signers[S.signers.length-1].key:null;}
+/* сколько виз уже стоит на заявке */
+function visaCount(r){
+  var n=0,ap=(r&&r.approvals)||{};
+  for(var k in ap) if(ap[k]&&ap[k].decision==="approved")n++;
+  return n;
+}
 function signed(r,key){var v=(r.approvals||{})[key];return !!(v&&v.decision==="approved");}
 function allSigned(r){
   if(!S.signers.length)return false;
@@ -333,6 +339,10 @@ function localDo(action,payload,okMsg){
   }else if(action==="deleteRequest"){
     S.requests=S.requests.filter(function(x){return x.id!==payload.requestId;});
     if(S.selReq===payload.requestId)S.selReq=null;
+  }else if(action==="deleteContract"){
+    S.requests.forEach(function(x){if(x.contractId===payload.contractId)x.contractId="";});
+    S.contracts=S.contracts.filter(function(x){return x.id!==payload.contractId;});
+    if(S.selCon===payload.contractId)S.selCon=null;
   }else{
     toast("Бе база ин амал дастрас нест · без базы это действие недоступно",true);
     return Promise.reject(new Error("offline"));
@@ -569,7 +579,8 @@ function reqDoc(r){
       '<button class="btn dang" data-act="reject" data-id="'+esc(r.id)+'">Рад кардан</button>':"")+
     (canPay?'<button class="btn pri" data-act="pay" data-id="'+esc(r.id)+'">Пардохтро қайд кардан</button>':"")+
     '<button class="btn" data-act="sheet" data-id="'+esc(r.id)+'">Бланк дархост</button>'+
-    (st==="draft"?'<button class="btn sm" data-act="editreq" data-id="'+esc(r.id)+'">Таҳрир</button>':"")+
+    '<button class="btn sm" data-act="editreq" data-id="'+esc(r.id)+'">Таҳрир</button>'+
+    '<button class="btn sm dang" data-act="delreq" data-id="'+esc(r.id)+'">Нест кардан</button>'+
     "</div>"+
     (st==="review"&&!myTurn?'<p class="hint" style="margin-top:10px">'+waitHint(r)+"</p>":"")+
     (st==="paid"?'<p class="hint" style="margin-top:10px">Пардохт қайд шуд '+dStamp(r.paidAt)+".</p>":"")+
@@ -1176,7 +1187,8 @@ function conDoc(c){
         STATUS[st].cls+'">'+STATUS[st].short+"</span> · "+dRu(r.date)+'</span><span class="a">'+
         nf(reqTotalCur(r),2)+" "+esc(r.currency||"")+"</span></div>";
     }).join("")+"</div>":'<p class="hint">Дархост нест</p>')+
-    '<div class="acts" style="margin-top:14px"><button class="btn sm" data-act="editcon" data-id="'+esc(c.id)+'">Таҳрир</button></div>'+
+    '<div class="acts" style="margin-top:14px"><button class="btn sm" data-act="editcon" data-id="'+esc(c.id)+'">Таҳрир</button>'+
+    '<button class="btn sm dang" data-act="delcon" data-id="'+esc(c.id)+'">Нест кардан</button></div>'+
     "</section></div>";
 }
 
@@ -1269,6 +1281,52 @@ function act(a,id){
   if(a==="pay"){markPaid(r);return;}
   if(a==="editreq"){editRequest(r);return;}
   if(a==="editcon"){editContract(findCon(id));return;}
+  if(a==="delreq"){delRequest(r);return;}
+  if(a==="delcon"){delContract(findCon(id));return;}
+}
+
+
+/* ── удаление: спрашиваем всегда и пишем, что именно исчезнет ── */
+function delRequest(r){
+  if(!r)return;
+  var vis=visaCount(r);
+  modal({
+    title:"Нест кардани дархост",
+    danger:true,
+    body:"<p>Дархости № <b>"+esc(r.number)+"</b> аз "+dRu(r.date)+
+      " ва ҳамаи сатрҳои он нест карда мешаванд."+
+      (vis?" Имзоҳои гузошташуда ("+vis+") низ нест мешаванд.":"")+"</p>"+
+      '<p class="hint">Удаление не отменить. Оплаты по контракту останутся, '+
+      "но пропадут из бюджета, если считались по этой заявке.</p>",
+    okText:"Нест кардан",
+    onOk:function(){
+      send("deleteRequest",{requestId:r.id},"Дархост нест карда шуд").then(function(){
+        S.selReq=null;render();
+      });
+    }
+  });
+}
+
+function delContract(c){
+  if(!c)return;
+  var reqs=S.requests.filter(function(r){return r.contractId===c.id;});
+  var pays=(c.payments||[]).length;
+  modal({
+    title:"Нест кардани шартнома",
+    danger:true,
+    body:"<p>Шартномаи № <b>"+esc(c.no)+"</b> ("+esc(c.supplier||"")+") нест карда мешавад.</p>"+
+      (pays?'<p class="hint" style="color:var(--no)">Пардохтҳо: '+pays+
+        " — онҳо низ нест мешаванд.</p>":"")+
+      (reqs.length?'<p class="hint">Дархостҳо: '+reqs.length+
+        " — онҳо мемонанд, вале робита бо шартнома гум мешавад.</p>":"")+
+      '<p class="hint">Удаление не отменить.</p>',
+    okText:"Нест кардан",
+    onOk:function(){
+      send("deleteContract",{contractId:c.id},"Шартнома нест карда шуд").then(function(){
+        S.selCon=null;render();
+      });
+    }
+  });
 }
 
 function doSubmit(r){
@@ -1427,9 +1485,29 @@ function editRequest(r){
         if(i>=0)S.requests[i]=d; else S.requests.push(d);
         S.selReq=d.id;localSave();render();toast("Сабт шуд");return;
       }
-      send("saveRequest",{request:d},isNew?"Дархост сохта шуд":"Сабт шуд").then(function(res){
-        if(res&&res.id)S.selReq=res.id; render();
-      });
+      /* Правка уже отправленной заявки: сервер требует force и снимает визы —
+         подписывали другой документ. Предупреждаем до отправки. */
+      var sent=!isNew&&r&&r.submittedAt, vis=sent?visaCount(r):0;
+      var go=function(){
+        send("saveRequest",{request:d,force:sent?true:undefined},
+          isNew?"Дархост сохта шуд":"Сабт шуд").then(function(res){
+          if(res&&res.id)S.selReq=res.id; render();
+        });
+      };
+      if(vis){
+        /* это окно закроется после onOk и затёрло бы новое — открываем следом */
+        setTimeout(function(){ modal({
+          title:"Таҳрири дархости имзошуда",
+          danger:true,
+          body:"<p>Дархост аллакай "+vis+" имзо дорад. Пас аз таҳрир имзоҳо бекор "+
+            "мешаванд ва мувофиқа аз нав оғоз меёбад.</p>"+
+            '<p class="hint">Подписывали другой текст, поэтому визы снимаются.</p>',
+          okText:"Таҳрир кардан",
+          onOk:go
+        }); },0);
+        return;
+      }
+      go();
     }
   });
 }

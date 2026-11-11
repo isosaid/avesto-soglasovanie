@@ -61,6 +61,7 @@ function doPost(e) {
       case 'decide':        out = decide(p); break;
       case 'markPaid':      out = markPaid(p); break;
       case 'deleteRequest': out = deleteRequest(p); break;
+      case 'deleteContract': out = deleteContract(p); break;
       case 'importRegistry': out = importRegistry(p); break;
       case 'login':         out = login(p); break;
       case 'logout':        out = logout(p); break;
@@ -409,6 +410,9 @@ function saveRequest(p) {
   if (existing && existing.submittedAt && !p.force) {
     throw new Error('Дархост аллакай ба мувофиқа фиристода шуд · заявка уже на согласовании, править нельзя');
   }
+  // Правка отправленной заявки отменяет уже поставленные визы:
+  // подписывали другой документ.
+  if (existing && existing.submittedAt && p.force) removeWhere('approvals', 'requestId', r.id);
 
   upsert('requests', {
     id: r.id, number: r.number, date: r.date || '', company: r.company || '',
@@ -521,11 +525,29 @@ function markPaid(p) {
   return {paidAt: r.paidAt};
 }
 
+/**
+ * Удаление контракта. Заявки по нему остаются, но теряют привязку —
+ * иначе из бюджета пропали бы уже оплаченные суммы.
+ */
+function deleteContract(p) {
+  auth(p);
+  var id = String(p.contractId || '');
+  var sh = sheet('contracts');
+  var row = rowIndexById('contracts', id);
+  if (row < 0) throw new Error('Шартнома ёфт нашуд · контракт не найден');
+
+  var reqs = readAll('requests').filter(function (r) { return String(r.contractId) === id; });
+  reqs.forEach(function (r) { r.contractId = ''; upsert('requests', r); });
+
+  removeWhere('payments', 'contractId', id);
+  sh.deleteRow(row);
+  return {deleted: id, unlinked: reqs.length};
+}
+
 function deleteRequest(p) {
   auth(p);
   var r = findRequest(p.requestId);
   if (!r) throw new Error('Дархост ёфт нашуд');
-  if (r.submittedAt) throw new Error('Фиристодашударо нест кардан мумкин нест · отправленную заявку удалить нельзя');
   removeWhere('items', 'requestId', r.id);
   removeWhere('approvals', 'requestId', r.id);
   var sh = sheet('requests');
