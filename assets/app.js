@@ -772,6 +772,51 @@ function codeRequests(code){
   }).sort(function(a,b){return String(a.date||"").localeCompare(String(b.date||""));});
 }
 
+/* Заявки, оставшиеся без статьи: финансовый отдел проставляет их здесь —
+   заявителю код знать не обязательно. */
+function fixCodes(){
+  var list=S.requests.filter(function(r){return effCode(r)===""&&inScope(r.company);});
+  if(!list.length){toast("Ҳама дархостҳо рамз доранд · все заявки с кодом");return;}
+  var opts=BUDGET_CODES.map(function(c){
+    return '<option value="'+c.code+'">'+c.code+" — "+esc(c.name)+"</option>";
+  }).join("");
+  var h='<div class="tablescroll"><table class="grid"><thead><tr><th>№</th><th>Сана</th>'+
+    "<th>Шартнома</th><th class=r>Маблағ, сомонӣ</th><th>Рамзи буҷет</th></tr></thead><tbody>"+
+    list.map(function(r){
+      var c=findCon(r.contractId);
+      return '<tr data-rid="'+esc(r.id)+'"><td class=mono>'+esc(r.number)+"</td><td>"+dRu(r.date)+"</td>"+
+        "<td>"+esc(c?c.no:"—")+"</td>"+'<td class="r">'+nf(reqTotalTjs(r),2)+"</td>"+
+        '<td><select class="codesel"><option value="">— бе рамз —</option>'+opts+"</select></td></tr>";
+    }).join("")+"</tbody></table></div>";
+
+  modal({
+    title:"Дархостҳои бе рамз · заявки без статьи",
+    wide:true,
+    body:h+'<p class="hint">Статья, проставленная контракту, подтянется сама — '+
+      "здесь остаются только заявки, у которых её нет ни у себя, ни у контракта.</p>",
+    okText:"Нигоҳ доштан",
+    onOk:function(root){
+      var trs=root.querySelectorAll("tr[data-rid]"),todo=[];
+      for(var i=0;i<trs.length;i++){
+        var v=trs[i].querySelector(".codesel").value;
+        if(!v)continue;
+        var r=findReq(trs[i].dataset.rid);
+        if(!r)continue;
+        var copy=JSON.parse(JSON.stringify(r)); copy.code=v;
+        todo.push(copy);
+      }
+      if(!todo.length)return;
+      var done=0;
+      todo.forEach(function(d){
+        send("saveRequest",{request:d}).then(function(){
+          done++;
+          if(done===todo.length)toast("Рамз гузошта шуд: "+done);
+        });
+      });
+    }
+  });
+}
+
 function openCode(code){
   var cons=codeContracts(code),reqs=codeRequests(code);
   var plan=0; for(var m=1;m<=12;m++)plan+=planOf(code,m);
@@ -855,7 +900,8 @@ function renderBudget(){
     "нажмите строку, чтобы увидеть контракты и заявки статьи</p>";
   var orphan=codesNoCode();
   var note=orphan>0?'<p class="hint bnote">Дархостҳо бе рамзи буҷет: '+nf(orphan,2)+
-    " сомонӣ — в бюджет не попадают, проставьте код в заявке.</p>":"";
+    ' сомонӣ — в бюджет не попадают. <button class="linkbtn" id="fixCodes">Рамз гузоштан · '+
+    "проставить статьи</button></p>":"";
 
   return '<section class="panel budget">'+head+body+
     (S.bMode==="months"?"":hint)+note+"</section>";
@@ -1177,6 +1223,7 @@ function wire(){
   els=view.querySelectorAll("[data-act]");
   for(i=0;i<els.length;i++)(function(b){b.onclick=function(){act(b.dataset.act,b.dataset.id);};})(els[i]);
   var be=document.getElementById("bEdit"); if(be)be.onclick=editBudget;
+  var fx=document.getElementById("fixCodes"); if(fx)fx.onclick=fixCodes;
   els=view.querySelectorAll("tr.clickrow[data-code]");
   for(i=0;i<els.length;i++)(function(t){
     t.onclick=function(){openCode(t.dataset.code);};
@@ -1295,7 +1342,7 @@ function editRequest(r){
       '<option value="">— бе рамз —</option>'+BUDGET_CODES.map(function(c){
         return '<option value="'+c.code+'"'+(String(d.code||"")===c.code?" selected":"")+">"+
           c.code+" — "+esc(c.name)+"</option>";
-      }).join("")+"</select></div>"+
+      }).join("")+'</select><p class="hint codehint" id="codeHint"></p></div>'+
       '<div class="fgrid"><div><label class="f">Асъор</label><input id="fCur" value="'+esc(d.currency)+'"></div>'+
       '<div><label class="f">Курс, сомонӣ</label><input id="fRate" class="num" value="'+esc(d.rate)+'"></div></div>'+
       '<div><label class="f">Асос · обоснование</label><textarea id="fPurp">'+esc(d.purpose)+"</textarea></div>"+
@@ -1305,6 +1352,39 @@ function editRequest(r){
       '<button class="btn sm" id="addItem" style="margin-top:8px">+ Сатр</button></div>',
     okText:"Нигоҳ доштан",
     onOpen:function(root){
+      /* Статья бюджета обычно известна по контракту — подставляем её сами,
+         чтобы заявителю не пришлось угадывать код. */
+      var selCon=root.querySelector("#fCon"),
+          selCode=root.querySelector("#fCode"),
+          hint=root.querySelector("#codeHint");
+      function conCode(){
+        var c=findCon(selCon.value);
+        return c&&c.code?String(c.code):"";
+      }
+      function showHint(auto){
+        var cc=conCode();
+        if(selCode.value){
+          hint.textContent=(auto?"Аз шартнома гирифта шуд · подставлено из контракта: ":"Статья: ")+
+            selCode.value+" — "+codeName(selCode.value);
+          hint.className="hint codehint";
+        }else if(cc){
+          hint.textContent="У контракта указана статья "+cc+" — "+codeName(cc)+", можно оставить её.";
+          hint.className="hint codehint";
+        }else{
+          hint.textContent="Без статьи заявка не попадёт в буҷет. Если не знаете код — "+
+            "оставьте пусто, финансовый отдел проставит его на вкладке «Буҷет».";
+          hint.className="hint codehint warn";
+        }
+      }
+      selCon.addEventListener("change",function(){
+        var cc=conCode();
+        if(cc&&!selCode.value){selCode.value=cc;showHint(true);return;}
+        showHint(false);
+      });
+      selCode.addEventListener("change",function(){showHint(false);});
+      if(!selCode.value&&conCode())selCode.value=conCode();
+      showHint(!!conCode()&&!!selCode.value);
+
       var box=root.querySelector("#itemsBox");
       function draw(){
         box.innerHTML=d.items.map(function(it,i){

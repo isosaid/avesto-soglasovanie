@@ -353,3 +353,9 @@ h4.dh{font-family:var(--serif);font-size:15px;margin:18px 0 8px}
 .bhint{padding:0 20px 14px;margin-top:-6px}
 .modal .tablescroll{overflow-x:auto;margin-top:4px}
 .modal .tablescroll table{min-width:520px}
+.codehint{margin-top:5px}
+.codehint.warn{color:var(--no)}
+.linkbtn{border:0;background:none;padding:0;color:var(--accent);text-decoration:underline;
+  cursor:pointer;font:inherit}
+.bnote .linkbtn{color:var(--no)}
+table.grid select.codesel{font-size:12px;padding:3px 6px;min-width:190px}
