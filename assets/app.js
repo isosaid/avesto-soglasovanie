@@ -85,15 +85,23 @@ function companyOptions(cur){
 
 /* ─── статьи инвестиционного бюджета (лист «КОД» из буҷети 2026) ─── */
 var BUDGET_CODES = [
-  {code:"1000", name:"Хароҷотҳои сохтмонӣ",    ru:"Строительные расходы"},
-  {code:"1010", name:"Закуп",                   ru:"Закуп"},
-  {code:"1020", name:"Ҳаққи кор",               ru:"Оплата работ"},
-  {code:"2000", name:"Воситаҳои асосӣ",         ru:"Основные средства"},
-  {code:"2010", name:"Оборудование",            ru:"Оборудование"},
-  {code:"2020", name:"Техника ва лавозимот",    ru:"Техника и принадлежности"},
-  {code:"3000", name:"Хароҷотҳои пешазлоиҳавӣ", ru:"Предпроектные расходы"},
-  {code:"4000", name:"Дигар хароҷотҳо",         ru:"Прочие расходы"}
+  {code:"1000", name:"Хароҷотҳои сохтмонӣ:",            ru:"Строительные расходы", group:true},
+  {code:"1010", name:"Хариди масолеҳи сохтмонӣ",        ru:"Закуп стройматериалов", parent:"1000"},
+  {code:"1020", name:"Ҳаққи кори кормандони сохтмон",   ru:"Оплата труда строителей", parent:"1000"},
+  {code:"2000", name:"Воситаҳои асосӣ:",                ru:"Основные средства", group:true},
+  {code:"2010", name:"Таҷҳизот (оборудование)",         ru:"Оборудование", parent:"2000"},
+  {code:"2020", name:"Техника ва лавозимот",            ru:"Техника и принадлежности", parent:"2000"},
+  {code:"3000", name:"Хароҷоти пеш аз лоиҳавӣ",         ru:"Предпроектные расходы"},
+  {code:"4000", name:"Дигар хароҷотҳо",                 ru:"Прочие расходы"}
 ];
+/* «1000» в таблице холдинга пишется как «1 000» */
+function codeLabel(code){
+  var c=String(code||"");
+  return c.length===4?c.slice(0,1)+" "+c.slice(1):c;
+}
+function childrenOf(code){
+  return BUDGET_CODES.filter(function(c){return c.parent===String(code);});
+}
 var MONTHS_TJ = ["Январ","Феврал","Март","Апрел","Май","Июн","Июл","Август","Сентябр","Октябр","Ноябр","Декабр"];
 function codeName(code){
   for(var i=0;i<BUDGET_CODES.length;i++)if(BUDGET_CODES[i].code===String(code))return BUDGET_CODES[i].name;
@@ -877,17 +885,26 @@ function renderBudget(){
   S.requests.forEach(function(r){var t=monthOf(r.date);if(t)years[t.year]=1;});
   var ylist=Object.keys(years).map(Number).sort();
 
-  var rows=BUDGET_CODES.map(function(c){
-    var plan=0,fact=0,mp=[],mf=[];
+  /* Строка статьи: своё плюс подстатьи, как «1 000» в таблице холдинга —
+     итог по группе, а не отдельный расход. */
+  function lineOf(c){
+    var mp=[],mf=[],plan=0,fact=0,kids=childrenOf(c.code);
     for(var m=1;m<=12;m++){
       var p=planOf(c.code,m),f=factOf(c.code,m);
+      kids.forEach(function(k){p+=planOf(k.code,m);f+=factOf(k.code,m);});
       mp.push(p); mf.push(f); plan+=p; fact+=f;
     }
-    return {c:c,plan:plan,fact:fact,mp:mp,mf:mf,pipe:pipelineOf(c.code)};
-  });
+    var pipe=pipelineOf(c.code);
+    kids.forEach(function(k){pipe+=pipelineOf(k.code);});
+    return {c:c,plan:plan,fact:fact,mp:mp,mf:mf,pipe:pipe,group:!!c.group,sub:!!c.parent};
+  }
+  var rows=BUDGET_CODES.map(lineOf);
+
+  /* В итог берём только верхний уровень: иначе подстатьи сосчитались бы дважды */
   var tot={plan:0,fact:0,pipe:0,mp:[],mf:[]};
   for(var m=0;m<12;m++){tot.mp[m]=0;tot.mf[m]=0;}
   rows.forEach(function(r){
+    if(r.sub)return;
     tot.plan+=r.plan; tot.fact+=r.fact; tot.pipe+=r.pipe;
     for(var m=0;m<12;m++){tot.mp[m]+=r.mp[m];tot.mf[m]+=r.mf[m];}
   });
@@ -930,12 +947,16 @@ function diffCell(d){
 }
 
 function budgetYear(rows,tot){
-  var h='<table class="grid bgrid"><thead><tr>'+
-    "<th>Рамз</th><th>Номгӯй</th><th class=r>Нақша</th><th class=r>Иҷроиш</th>"+
-    "<th class=r>Фарқият</th><th class=r>Иҷроиш, %</th><th class=r>Дар раванд</th></tr></thead><tbody>";
+  var h='<table class="grid bgrid"><thead>'+
+    '<tr><th rowspan=2>КОД</th><th rowspan=2>Номгӯй</th>'+
+    '<th colspan=4 class="c yr">Соли '+esc(String(S.bYear))+"</th>"+
+    '<th rowspan=2 class="r">Дар раванд</th></tr>'+
+    '<tr><th class=r>Нақша</th><th class=r>Иҷроиш</th><th class=r>Фарқият</th>'+
+    '<th class="r pcth">Иҷроиш бо %</th></tr></thead><tbody>';
   rows.forEach(function(r){
-    h+='<tr class="clickrow" data-code="'+r.c.code+'"><td class=mono>'+esc(r.c.code)+"</td><td>"+esc(r.c.name)+
-       '<span class="sub">'+esc(r.c.ru)+"</span></td>"+
+    h+='<tr class="clickrow'+(r.group?" grp":"")+(r.sub?" lvl2":"")+
+       '" data-code="'+r.c.code+'"><td class=mono>'+esc(codeLabel(r.c.code))+"</td>"+
+       "<td>"+esc(r.c.name)+'<span class="sub">'+esc(r.c.ru)+"</span></td>"+
        '<td class="r">'+nf(r.plan,2)+"</td>"+
        '<td class="r">'+nf(r.fact,2)+"</td>"+
        diffCell(r.plan-r.fact)+pctCell(r.fact,r.plan)+
@@ -956,7 +977,8 @@ function budgetMonths(rows,tot){
   for(m=0;m<12;m++)h+='<th class="r sm">Нақша</th><th class="r sm">Иҷроиш</th>';
   h+='<th class="r sm">Нақша</th><th class="r sm">Иҷроиш</th></tr></thead><tbody>';
   rows.forEach(function(r){
-    h+="<tr><td class=mono>"+esc(r.c.code)+"</td><td>"+esc(r.c.name)+"</td>";
+    h+='<tr class="'+(r.group?"grp":(r.sub?"lvl2":""))+'"><td class=mono>'+
+       esc(codeLabel(r.c.code))+"</td><td>"+esc(r.c.name)+"</td>";
     for(var m=0;m<12;m++){
       h+='<td class="r sm">'+(r.mp[m]?nf(r.mp[m],0):"")+"</td>"+
          '<td class="r sm fact">'+(r.mf[m]?nf(r.mf[m],0):"")+"</td>";
@@ -987,7 +1009,8 @@ function editBudget(){
   h+='<th class="r">Ҳамагӣ</th></tr></thead><tbody>';
   BUDGET_CODES.forEach(function(c){
     var b=cur[c.code]||{};
-    h+='<tr data-code="'+c.code+'"><td class=mono>'+esc(c.code)+"</td><td>"+esc(c.name)+"</td>";
+    h+='<tr class="'+(c.group?"grp":(c.parent?"lvl2":""))+'" data-code="'+c.code+'">'+
+       '<td class=mono>'+esc(codeLabel(c.code))+"</td><td>"+esc(c.name)+"</td>";
     for(var m=1;m<=12;m++){
       h+='<td class="sm"><input class="bin" data-m="'+m+'" inputmode="decimal" value="'+
          (Number(b["m"+m])||0?nf(Number(b["m"+m]),0).replace(/\s/g,""):"")+'"></td>';

@@ -330,7 +330,7 @@ body.gate main{padding-block:0}
 .tablewrap.scrollx{overflow-x:auto}
 table.bgrid{width:100%;margin-top:14px}
 table.bgrid td.mono,table.bgrid th{white-space:nowrap}
-table.bgrid .sub{display:block;font-size:11.5px;color:var(--ink-soft)}
+table.bgrid td .sub{display:block;font-size:11.5px;color:var(--ink-soft)}
 table.bgrid td.muted{color:var(--ink-soft)}
 table.bgrid td.pct{font-variant-numeric:tabular-nums}
 table.bgrid td.pct.ok{color:var(--ok)}
@@ -359,3 +359,9 @@ h4.dh{font-family:var(--serif);font-size:15px;margin:18px 0 8px}
   cursor:pointer;font:inherit}
 .bnote .linkbtn{color:var(--no)}
 table.grid select.codesel{font-size:12px;padding:3px 6px;min-width:190px}
+table.bgrid th.c{text-align:center}
+table.bgrid th.yr{border-left:1px solid var(--rule);border-right:1px solid var(--rule)}
+table.bgrid th.pcth{color:var(--no)}
+table.bgrid tr.grp td{font-weight:700;background:var(--paper)}
+table.bgrid tr.lvl2 td:nth-child(2),.bedit tr.lvl2 td:nth-child(2){padding-left:26px}
+.bedit tr.grp td{font-weight:700}
