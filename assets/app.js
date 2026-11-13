@@ -246,7 +246,7 @@ function signerBy(key){
 /* ═══ состояние ═══ */
 var S={
   tab:"budget", filter:"all",
-  contracts:[], requests:[], budget:[], signers:DEFAULT_SIGNERS.slice(),
+  contracts:[], requests:[], budget:[], protocols:[], signers:DEFAULT_SIGNERS.slice(),
   bYear:new Date().getFullYear(),
   selReq:null, selCon:null, sheetFor:null,
   q:"", cur:"all", rest:"all", comp:"all", conMode:"cards",
@@ -292,6 +292,7 @@ function applyState(d){
   S.contracts=d.contracts||[];
   S.requests=d.requests||[];
   S.budget=d.budget||[];
+  S.protocols=d.protocols||[];
   if(d.signers&&d.signers.length)S.signers=d.signers;
   S.loaded=true; S.error=null;
 }
@@ -381,7 +382,9 @@ function render(){
   document.body.classList.toggle("gate",gate);
   if(gate){ view.innerHTML=renderGate(); wireGate(); return; }
   view.innerHTML=(OFFLINE?offlineNotice():(READONLY?readonlyNotice():""))+(S.error?errorNotice():"")+
-    (S.tab==="budget"?renderBudget():S.tab==="requests"?renderRequests():renderContracts());
+    (S.tab==="budget"?renderBudget():
+     S.tab==="protocols"?renderProtocols():
+     S.tab==="requests"?renderRequests():renderContracts());
   wire();
   var sub=document.getElementById("brandSub");
   if(sub)sub.textContent=(S.comp&&S.comp!=="all")
@@ -558,7 +561,9 @@ function reqDoc(r){
       "<div><dt>Интиқолдиҳанда</dt><dd>"+esc(c.supplier)+(c.country?" · "+esc(c.country):"")+"</dd></div>"+
       '<div><dt>Бақия барои пардохт</dt><dd class="num">'+money(balance(c),c.currency)+"</dd></div></dl>":
       '<div class="hint" style="margin-top:12px">Шартнома пайваст нашуд · контракт не привязан</div>')+
-    '<dl class="kv" style="margin-top:14px"><div><dt>Рамзи буҷет</dt><dd>'+
+    '<dl class="kv" style="margin-top:14px">'+
+    (r.tranche&&c?"<div><dt>Транш</dt><dd>"+esc(trancheLabel(c,r.tranche))+"</dd></div>":"")+
+    '<div><dt>Рамзи буҷет</dt><dd>'+
     (r.code?'<span class="mono">'+esc(r.code)+"</span> · "+esc(codeName(r.code))
           :'<span style="color:var(--no)">нишон дода нашуд · код не указан</span>')+"</dd></div></dl>"+
     "</section>"+
@@ -578,6 +583,7 @@ function reqDoc(r){
     '<div class="hint" style="margin-top:9px">Курси ҳисобӣ: <b class="num">'+nf(r.rate,4)+"</b> сомонӣ / "+
     esc(r.currency||"")+' · эквивалент <b class="num">'+nf(tjs,2)+"</b> сомонӣ</div></section>"+
 
+    docsBlock(r)+
     "<section><h3>Масири мувофиқа · маршрут</h3>"+
     '<ol class="route">'+S.signers.map(function(p,i){return routeStep(p,i,r,st);}).join("")+"</ol></section>"+
 
@@ -878,6 +884,216 @@ function openCode(code){
   });
 }
 
+
+/* ═══ транши контракта ═══
+ * График из контракта (шарт + маблағ) — это и есть транши: заявка
+ * указывает, какой из них она закрывает. */
+function tranches(c){
+  if(!c)return [];
+  return (c.plan||[]).map(function(x,i){
+    return {n:i+1,cond:x.cond||"",amount:Number(x.amount)||0};
+  }).filter(function(x){return x.amount||x.cond;});
+}
+function trancheRequests(c,n){
+  if(!c)return [];
+  return S.requests.filter(function(r){
+    return r.contractId===c.id&&Number(r.tranche)===Number(n);
+  });
+}
+function trancheLabel(c,n){
+  var tr=tranches(c);
+  for(var i=0;i<tr.length;i++)if(tr[i].n===Number(n))
+    return "Транш "+tr[i].n+(tr[i].cond?" — "+tr[i].cond:"")+
+      (tr[i].amount?" · "+nf(tr[i].amount,2)+" "+(c.currency||""):"");
+  return n?"Транш "+n:"";
+}
+
+
+/* ═══ протоколҳои ҷаласаи Шӯрои директорон ═══
+ * Решение совета — основание для контрактов: контракт ссылается на протокол,
+ * и в карточке протокола видно, что по нему пошло в работу. */
+function protoList(){
+  return (S.protocols||[]).filter(function(x){return inScope(x.company);})
+    .sort(function(a,b){return String(b.date||"").localeCompare(String(a.date||""));});
+}
+function findProto(id){
+  var l=S.protocols||[];
+  for(var i=0;i<l.length;i++)if(l[i].id===id)return l[i];
+  return null;
+}
+function protoContracts(id){
+  return S.contracts.filter(function(c){return String(c.protocolId||"")===String(id);});
+}
+
+function renderProtocols(){
+  var list=protoList();
+  var h='<section class="panel"><div class="bhead"><div>'+
+    "<h2>Протоколҳои ҷаласаи Шӯрои директорон</h2>"+
+    '<p>'+esc(S.comp==="all"?"ҳамаи ташкилотҳо · все организации":S.comp)+"</p></div>"+
+    '<div class="btools"><button class="btn" id="newProto">+ Протоколи нав</button></div></div>';
+
+  if(!list.length){
+    h+='<p class="hint" style="padding:18px 20px">Протокол сабт нашудааст · протоколов пока нет. '+
+       "Нажмите «+ Протоколи нав», чтобы внести решение совета.</p></section>";
+    return h;
+  }
+
+  h+='<div class="tablewrap"><table class="grid"><thead><tr><th>№</th><th>Сана</th>'+
+    "<th>Мавзӯъ</th><th class=r>Шартномаҳо</th><th>Ҳуҷҷат</th></tr></thead><tbody>"+
+    list.map(function(x){
+      var cs=protoContracts(x.id);
+      return '<tr class="clickrow" data-proto="'+esc(x.id)+'"><td class=mono>'+esc(x.number)+"</td>"+
+        "<td>"+dRu(x.date)+"</td><td>"+esc(x.subject||"—")+"</td>"+
+        '<td class="r">'+(cs.length||"—")+"</td>"+
+        "<td>"+(x.fileUrl?'<a href="'+esc(x.fileUrl)+'" target="_blank" rel="noopener">кушодан</a>':"—")+
+        "</td></tr>";
+    }).join("")+"</tbody></table></div>"+
+    '<p class="hint bhint">Сатрро пахш кунед · нажмите строку, чтобы открыть протокол</p></section>';
+  return h;
+}
+
+function openProto(id){
+  var x=findProto(id); if(!x)return;
+  var cs=protoContracts(id);
+  var h='<dl class="kv"><div><dt>Рақам</dt><dd class="mono">'+esc(x.number)+"</dd></div>"+
+    "<div><dt>Сана</dt><dd>"+dRu(x.date)+"</dd></div>"+
+    "<div><dt>Ташкилот</dt><dd>"+esc(x.company||"—")+"</dd></div></dl>"+
+    (x.subject?"<h4 class=dh>Мавзӯъ · тема</h4><p>"+esc(x.subject)+"</p>":"")+
+    (x.decisions?"<h4 class=dh>Қарорҳо · решения</h4><p class=pre>"+esc(x.decisions)+"</p>":"")+
+    (x.fileUrl?'<p><a href="'+esc(x.fileUrl)+'" target="_blank" rel="noopener">'+
+      esc(x.fileName||"ҳуҷҷат")+"</a></p>":"")+
+    "<h4 class=dh>Шартномаҳои аз рӯи ин протокол</h4>"+
+    (cs.length?'<div class="tablescroll"><table class="grid"><thead><tr><th>№</th>'+
+      "<th>Интиқолдиҳанда</th><th class=r>Маблағ</th></tr></thead><tbody>"+
+      cs.map(function(c){
+        return "<tr><td class=mono>"+esc(c.no)+"</td><td>"+esc(c.supplier||"")+"</td>"+
+          '<td class="r">'+nf(c.invoice,2)+" "+esc(c.currency||"")+"</td></tr>";
+      }).join("")+"</tbody></table></div>"
+     :'<p class="hint">Шартнома пайваст нашудааст · контрактов по этому протоколу нет. '+
+      "Привязать можно в карточке контракта, поле «Протокол».</p>");
+
+  modal({
+    title:"Протоколи № "+x.number,
+    wide:true,
+    body:h,
+    okText:"Таҳрир",
+    onOk:function(){ setTimeout(function(){editProto(x);},0); }
+  });
+}
+
+function editProto(x){
+  var d=x?JSON.parse(JSON.stringify(x)):{id:"",number:"",date:new Date().toISOString().slice(0,10),
+    company:(S.comp&&S.comp!=="all")?S.comp:"",subject:"",decisions:"",fileUrl:"",fileName:""};
+  modal({
+    title:x?"Таҳрири протокол":"Протоколи нав",
+    wide:true,
+    body:'<div class="fgrid">'+
+      '<div><label class="f">Рақам</label><input id="pNum" value="'+esc(d.number)+'"></div>'+
+      '<div><label class="f">Сана</label><input id="pDate" type="date" value="'+esc(d.date)+'"></div>'+
+      '<div><label class="f">Ташкилот</label><select id="pComp">'+companyOptions(d.company)+"</select></div></div>"+
+      '<div><label class="f">Мавзӯъ · тема</label><input id="pSubj" value="'+esc(d.subject)+'"></div>'+
+      '<div><label class="f">Қарорҳо · решения</label><textarea id="pDec" rows="5">'+esc(d.decisions)+"</textarea></div>"+
+      '<div><label class="f">Истиноди ҳуҷҷат · ссылка на файл</label>'+
+      '<input id="pUrl" value="'+esc(d.fileUrl)+'" placeholder="https://drive.google.com/..."></div>'+
+      (x?'<button class="btn wide dang" id="pDel" type="button">Протоколро нест кардан</button>':""),
+    okText:"Нигоҳ доштан",
+    onOpen:function(root,close){
+      var del=root.querySelector("#pDel");
+      if(del)del.onclick=function(){
+        close();
+        setTimeout(function(){
+          modal({title:"Нест кардани протокол",danger:true,
+            body:"<p>Протоколи № <b>"+esc(d.number)+"</b> нест карда мешавад. "+
+              "Шартномаҳо мемонанд, вале истинод ба протокол гум мешавад.</p>",
+            okText:"Нест кардан",
+            onOk:function(){send("deleteProtocol",{protocolId:d.id},"Протокол нест карда шуд");}});
+        },0);
+      };
+    },
+    onOk:function(root){
+      d.number=root.querySelector("#pNum").value.trim();
+      d.date=root.querySelector("#pDate").value;
+      d.company=root.querySelector("#pComp").value;
+      d.subject=root.querySelector("#pSubj").value.trim();
+      d.decisions=root.querySelector("#pDec").value.trim();
+      d.fileUrl=root.querySelector("#pUrl").value.trim();
+      if(!d.number){toast("Рақами протокол лозим аст · нужен номер",true);return false;}
+      send("saveProtocol",{protocol:d},"Протокол сабт шуд");
+    }
+  });
+}
+
+
+/* ═══ ҳуҷҷатҳои тасдиқкунанда ═══
+ * Файл уходит на Диск в base64; в таблице остаётся ссылка. */
+var DOC_KINDS = [
+  "Супоришномаи пардохтӣ",
+  "SWIFT",
+  "ГТД",
+  "Инвойс",
+  "Мақсади истифодабарӣ",
+  "Дигар"
+];
+var DOC_MAX = 8*1024*1024;
+
+function docsBlock(r){
+  var list=r.docs||[];
+  return '<section class="docs"><h3>Ҳуҷҷатҳои тасдиқкунанда · подтверждающие документы'+
+    '<button class="plus" data-act="adddoc" data-id="'+esc(r.id)+'" title="Ҳуҷҷат замима кардан">+</button></h3>'+
+    (list.length?'<ul class="doclist">'+list.map(function(d){
+      return '<li><span class="kind">'+esc(d.kind||"Ҳуҷҷат")+"</span>"+
+        '<a href="'+esc(d.url)+'" target="_blank" rel="noopener">'+esc(d.name||"файл")+"</a>"+
+        '<span class="meta">'+(d.size?nf(Math.round(Number(d.size)/1024),0)+" КБ · ":"")+
+        esc(d.byName||"")+"</span>"+
+        '<button class="x" data-act="deldoc" data-id="'+esc(d.id)+'" title="Нест кардан">×</button></li>';
+    }).join("")+"</ul>"
+    :'<p class="hint">Ҳуҷҷат замима нашудааст · документов нет. Нажмите «+», чтобы приложить '+
+     "супоришнома, SWIFT, ГТД, инвойс или обоснование.</p>")+"</section>";
+}
+
+function addDoc(r){
+  if(!API){toast("Бе база замима кардан мумкин нест · без базы вложения недоступны",true);return;}
+  modal({
+    title:"Ҳуҷҷати тасдиқкунанда",
+    body:'<div><label class="f">Навъ · тип</label><select id="dKind">'+
+      DOC_KINDS.map(function(k){return '<option value="'+esc(k)+'">'+esc(k)+"</option>";}).join("")+
+      "</select></div>"+
+      '<div><label class="f">Файл</label><input type="file" id="dFile"></div>'+
+      '<p class="hint">PDF, фото или скан — до 8 МБ. Файл ложится в папку «Ҳуҷҷатҳои дархостҳо» '+
+      "на Диске рядом с таблицей и открывается по ссылке.</p>",
+    okText:"Замима кардан",
+    onOk:function(root){
+      var f=root.querySelector("#dFile").files[0];
+      var kind=root.querySelector("#dKind").value;
+      if(!f){toast("Файл интихоб нашуд · файл не выбран",true);return false;}
+      if(f.size>DOC_MAX){toast("Файл калон аст · файл больше 8 МБ",true);return false;}
+      S.busy=true;render();
+      var fr=new FileReader();
+      fr.onload=function(){
+        var b64=String(fr.result).split(",")[1]||"";
+        apiPost("uploadDoc",{requestId:r.id,kind:kind,name:f.name,
+          mime:f.type||"application/octet-stream",data:b64}).then(function(){
+          S.busy=false; toast("Ҳуҷҷат замима шуд"); reload();
+        }).catch(function(e){
+          S.busy=false;render(); toast(e.message||"Замима нашуд",true);
+        });
+      };
+      fr.onerror=function(){S.busy=false;render();toast("Файл хонда нашуд",true);};
+      fr.readAsDataURL(f);
+    }
+  });
+}
+
+function delDoc(id){
+  modal({
+    title:"Нест кардани ҳуҷҷат",
+    danger:true,
+    body:"<p>Ҳуҷҷат аз дархост ва аз Диск нест карда мешавад.</p>",
+    okText:"Нест кардан",
+    onOk:function(){ send("deleteDoc",{docId:id},"Ҳуҷҷат нест карда шуд"); }
+  });
+}
+
 function renderBudget(){
   var years={},nowY=new Date().getFullYear();
   years[nowY]=1; years[S.bYear]=1;
@@ -1156,6 +1372,10 @@ function conDoc(c){
     '<dl class="kv"><div><dt>Объекти дахлдор</dt><dd>'+esc(c.object||"—")+"</dd></div>"+
     "<div><dt>Маҳсулот</dt><dd>"+esc(c.product||"—")+"</dd></div>"+
     '<div><dt>Асъор / курс</dt><dd>'+esc(c.currency||"—")+' · <span class="num">'+nf(c.rate,4)+"</span></dd></div>"+
+    (function(){
+      var pr=findProto(c.protocolId);
+      return pr?"<div><dt>Протокол</dt><dd>№ "+esc(pr.number)+" · "+dRu(pr.date)+"</dd></div>":"";
+    })()+
     '<div><dt>Рамзи буҷет</dt><dd>'+(c.code?'<span class="mono">'+esc(c.code)+"</span> · "+
       esc(codeName(c.code)):"—")+"</dd></div>"+
     "<div><dt>Бонки пардохткунанда</dt><dd>"+esc(c.bank||"—")+"</dd></div>"+
@@ -1178,14 +1398,23 @@ function conDoc(c){
         "</dl></section>";
     })()+
     (function(){
-      var plan=(c.plan||[]).filter(function(x){return Number(x.amount)||0;});
-      if(!plan.length)return "";
-      var ps=plan.reduce(function(s,x){return s+(Number(x.amount)||0);},0);
-      return "<section><h3>Графики пардохт · график траншей</h3>"+
-        '<div class="paylist">'+plan.map(function(x,i){
-          return '<div class="pay"><span class="n">'+(i+1)+"</span><span>"+esc(x.cond||"—")+
-            '</span><span class="a">'+nf(x.amount,0)+" "+esc(c.currency||"")+"</span></div>";
-        }).join("")+"</div>"+
+      var tr=tranches(c);
+      if(!tr.length)return "";
+      var ps=tr.reduce(function(s,x){return s+x.amount;},0);
+      return "<section><h3>Графики пардохт · транши</h3>"+
+        '<table class="grid trgrid"><thead><tr><th>Транш</th><th>Шарт · условие</th>'+
+        '<th class=r>Маблағ</th><th>Дархост</th><th class=r>Пардохтшуда</th></tr></thead><tbody>'+
+        tr.map(function(x){
+          var rs=trancheRequests(c,x.n);
+          var paid=rs.reduce(function(s,r){
+            return s+reqPayments(r).reduce(function(a,p){return a+p.tjs;},0);},0);
+          return "<tr><td class=mono>"+x.n+"</td><td>"+esc(x.cond||"—")+"</td>"+
+            '<td class="r">'+nf(x.amount,2)+" "+esc(c.currency||"")+"</td>"+
+            "<td>"+(rs.length?rs.map(function(r){
+              return '<a href="#" class="trlink" data-req="'+esc(r.id)+'">№ '+esc(r.number)+"</a>";
+            }).join(", "):'<span class="hint">нест · нет</span>')+"</td>"+
+            '<td class="r">'+(paid?nf(paid,2)+" сомонӣ":"—")+"</td></tr>";
+        }).join("")+"</tbody></table>"+
         '<p class="hint" style="margin-top:9px">По графику: <b class="num">'+nf(ps,0)+"</b> "+esc(c.currency||"")+
         " · по инвойсу: <b class=\"num\">"+nf(c.invoice,0)+"</b>"+
         (Math.abs(ps-(Number(c.invoice)||0))>0.5?' · <span style="color:var(--wait)">расхождение '+
@@ -1258,6 +1487,15 @@ function wire(){
   els=view.querySelectorAll("[data-act]");
   for(i=0;i<els.length;i++)(function(b){b.onclick=function(){act(b.dataset.act,b.dataset.id);};})(els[i]);
   var be=document.getElementById("bEdit"); if(be)be.onclick=editBudget;
+  var np=document.getElementById("newProto"); if(np)np.onclick=function(){editProto(null);};
+  els=view.querySelectorAll("tr.clickrow[data-proto]");
+  for(i=0;i<els.length;i++)(function(t){
+    t.onclick=function(){openProto(t.dataset.proto);};
+  })(els[i]);
+  els=view.querySelectorAll("a.trlink[data-req]");
+  for(i=0;i<els.length;i++)(function(t){
+    t.onclick=function(e){e.preventDefault();S.tab="requests";S.selReq=t.dataset.req;render();};
+  })(els[i]);
   var fx=document.getElementById("fixCodes"); if(fx)fx.onclick=fixCodes;
   els=view.querySelectorAll("tr.clickrow[data-code]");
   for(i=0;i<els.length;i++)(function(t){
@@ -1305,6 +1543,8 @@ function act(a,id){
   if(a==="editreq"){editRequest(r);return;}
   if(a==="editcon"){editContract(findCon(id));return;}
   if(a==="delreq"){delRequest(r);return;}
+  if(a==="adddoc"){addDoc(r);return;}
+  if(a==="deldoc"){delDoc(id);return;}
   if(a==="delcon"){delContract(findCon(id));return;}
 }
 
@@ -1405,7 +1645,7 @@ function editRequest(r){
   var d=r?JSON.parse(JSON.stringify(r)):{
     number:"",date:new Date().toISOString().slice(0,10),
     company:(S.comp&&S.comp!=="all")?S.comp:'ҶДММ «Мармарӣ»',
-    code:"",
+    code:"", tranche:"",
     contractId:S.contracts[0]?S.contracts[0].id:"",purpose:"",purposeShort:"",
     currency:"EUR",rate:10.81,items:[{name:"",unit:"евро",qty:1,price:0}],approvals:{}
   };
@@ -1419,6 +1659,8 @@ function editRequest(r){
       '<div><label class="f">Сана</label><input id="fDate" type="date" value="'+esc(d.date)+'"></div>'+
       '<div><label class="f">Ташкилот</label><select id="fComp">'+companyOptions(d.company)+"</select></div></div>"+
       '<div><label class="f">Шартнома</label><select id="fCon"><option value="">— бе шартнома —</option>'+opts+"</select></div>"+
+      '<div><label class="f">Транш</label><select id="fTr"></select>'+
+      '<p class="hint" id="trHint"></p></div>'+
       '<div><label class="f">Рамзи буҷет · статья бюджета</label><select id="fCode">'+
       '<option value="">— бе рамз —</option>'+BUDGET_CODES.map(function(c){
         return '<option value="'+c.code+'"'+(String(d.code||"")===c.code?" selected":"")+">"+
@@ -1457,7 +1699,24 @@ function editRequest(r){
           hint.className="hint codehint warn";
         }
       }
-      selCon.addEventListener("change",function(){
+      var selTr=root.querySelector("#fTr"),trHint=root.querySelector("#trHint");
+      function fillTr(keep){
+        var c=findCon(selCon.value),tr=tranches(c);
+        var cur=keep?String(d.tranche||""):"";
+        selTr.innerHTML='<option value="">— бе транш —</option>'+tr.map(function(x){
+          var taken=trancheRequests(c,x.n).filter(function(r){return r.id!==d.id;});
+          return '<option value="'+x.n+'"'+(String(x.n)===cur?" selected":"")+">"+
+            "Транш "+x.n+(x.cond?" — "+esc(x.cond):"")+
+            (x.amount?" · "+nf(x.amount,2)+" "+esc(c.currency||""):"")+
+            (taken.length?" (дархости № "+esc(taken[0].number)+")":"")+"</option>";
+        }).join("");
+        trHint.textContent=tr.length
+          ? "Шартнома "+tr.length+" транш дорад · у контракта "+tr.length+
+            " транша: по каждому своя заявка."
+          : "У контракта нет графика траншей — поле можно оставить пустым.";
+      }
+      fillTr(true);
+      selCon.addEventListener("change",function(){ fillTr(false);
         var cc=conCode();
         if(cc&&!selCode.value){selCode.value=cc;showHint(true);return;}
         showHint(false);
@@ -1497,6 +1756,7 @@ function editRequest(r){
       d.company=root.querySelector("#fComp").value;
       d.contractId=root.querySelector("#fCon").value;
       d.code=root.querySelector("#fCode").value;
+      d.tranche=root.querySelector("#fTr").value;
       d.currency=root.querySelector("#fCur").value.trim();
       d.rate=Number(root.querySelector("#fRate").value)||0;
       d.purpose=root.querySelector("#fPurp").value.trim();
@@ -1580,6 +1840,11 @@ function editContract(c){
       '<p class="hint" id="planHint"></p></fieldset>'+
 
       '<fieldset class="grp"><legend>Иловагӣ</legend><div class="fgrid">'+
+      '<div><label class="f">Протокол</label><select id="cProto">'+
+      '<option value="">— бе протокол —</option>'+(S.protocols||[]).map(function(x){
+        return '<option value="'+esc(x.id)+'"'+(String(d.protocolId||"")===x.id?" selected":"")+">"+
+          "№ "+esc(x.number)+" · "+dRu(x.date)+"</option>";
+      }).join("")+"</select></div>"+
       '<div><label class="f">Рамзи буҷет · статья</label><select id="cCode">'+
       '<option value="">— бе рамз —</option>'+BUDGET_CODES.map(function(x){
         return '<option value="'+x.code+'"'+(String(d.code||"")===x.code?" selected":"")+">"+
@@ -1610,6 +1875,7 @@ function editContract(c){
     onOk:function(root){
       d.no=root.querySelector("#cNo").value.trim();
       d.code=root.querySelector("#cCode").value;
+      d.protocolId=root.querySelector("#cProto").value;
       d.date=root.querySelector("#cDate").value;
       d.supplier=root.querySelector("#cSup").value.trim();
       d.country=root.querySelector("#cCty").value.trim();

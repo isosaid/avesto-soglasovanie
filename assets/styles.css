@@ -365,3 +365,19 @@ table.bgrid th.pcth{color:var(--no)}
 table.bgrid tr.grp td{font-weight:700;background:var(--paper)}
 table.bgrid tr.lvl2 td:nth-child(2),.bedit tr.lvl2 td:nth-child(2){padding-left:26px}
 .bedit tr.grp td{font-weight:700}
+
+/* ═══ подтверждающие документы ═══ */
+section.docs h3{display:flex;align-items:center;gap:10px}
+.plus{width:24px;height:24px;border-radius:50%;border:1px solid var(--accent);background:var(--accent-soft);
+  color:var(--accent);font-size:16px;line-height:1;cursor:pointer;padding:0}
+.plus:hover{background:var(--accent);color:#fff}
+ul.doclist{list-style:none;margin:10px 0 0;padding:0;display:flex;flex-direction:column;gap:6px}
+ul.doclist li{display:flex;align-items:center;gap:10px;padding:7px 10px;background:var(--paper);
+  border:1px solid var(--rule);border-radius:7px;font-size:13px}
+ul.doclist .kind{font-size:11px;text-transform:uppercase;letter-spacing:.04em;color:var(--accent);
+  background:var(--accent-soft);border-radius:4px;padding:2px 7px;white-space:nowrap}
+ul.doclist .meta{margin-left:auto;font-size:11.5px;color:var(--ink-faint);white-space:nowrap}
+ul.doclist .x{border:0;background:none;color:var(--no);font-size:17px;line-height:1;cursor:pointer;padding:0 2px}
+table.trgrid{width:100%;margin-top:10px;font-size:13px}
+table.trgrid a.trlink{color:var(--accent)}
+p.pre{white-space:pre-wrap}

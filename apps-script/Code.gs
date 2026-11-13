@@ -15,21 +15,27 @@ var SHEETS = {
   items:     'Сатрҳо',
   approvals: 'Имзоҳо',
   signers:   'Имзокунандагон',
-  budget:    'Буҷет'
+  budget:    'Буҷет',
+  protocols: 'Протоколҳо',
+  docs:      'Ҳуҷҷатҳо'
 };
 
 var COLS = {
   contracts: ['id','no','date','supplier','country','object','product','currency','rate','bank','invoice','gtd','file',
               'reqAmount','reqTjs','allocAmount','allocTjs','req2Rate','req2Amount','req2Tjs',
               'alloc2Rate','alloc2Amount','alloc2Tjs','allocTotal',
-              'plan1Cond','plan1Sum','plan2Cond','plan2Sum','plan3Cond','plan3Sum','code'],
+              'plan1Cond','plan1Sum','plan2Cond','plan2Sum','plan3Cond','plan3Sum','code','protocolId'],
   payments:  ['id','contractId','amount','date','rate','tjs','note','requestId'],
-  requests:  ['id','number','date','company','contractId','currency','rate','purpose','purposeShort','submittedAt','paidAt','createdAt','code'],
+  requests:  ['id','number','date','company','contractId','currency','rate','purpose','purposeShort','submittedAt','paidAt','createdAt','code','tranche'],
   items:     ['id','requestId','name','unit','qty','price'],
   approvals: ['id','requestId','roleKey','decision','at','byName','comment'],
   signers:   ['key','posTj','posRu','name','login','password','order'],
   // план инвестиционного бюджета: строка на организацию, год и код расхода
-  budget:    ['id','company','year','code','m1','m2','m3','m4','m5','m6','m7','m8','m9','m10','m11','m12']
+  budget:    ['id','company','year','code','m1','m2','m3','m4','m5','m6','m7','m8','m9','m10','m11','m12'],
+  // протоколы заседания Совета директоров
+  protocols: ['id','number','date','company','subject','decisions','fileUrl','fileName','createdAt'],
+  // подтверждающие документы заявки (файлы лежат на Диске)
+  docs:      ['id','requestId','kind','name','url','size','addedAt','byName']
 };
 
 /* ─────────────────────────── вход ─────────────────────────── */
@@ -67,6 +73,10 @@ function doPost(e) {
       case 'logout':        out = logout(p); break;
       case 'changePassword': out = changePassword(p); break;
       case 'saveBudget':    out = saveBudget(p); break;
+      case 'saveProtocol':  out = saveProtocol(p); break;
+      case 'deleteProtocol':out = deleteProtocol(p); break;
+      case 'uploadDoc':     out = uploadDoc(p); break;
+      case 'deleteDoc':     out = deleteDoc(p); break;
       default: throw new Error('Амали номаълум · неизвестное действие: ' + action);
     }
     return json({ok: true, data: out, state: bootstrap()});
@@ -175,6 +185,8 @@ function bootstrap() {
   var approvals = readAll('approvals');
   var signers   = readAll('signers');
   var budget    = readAll('budget');
+  var protocols = readAll('protocols');
+  var docs      = readAll('docs');
 
   contracts.forEach(function (c) {
     c.rate = Number(c.rate) || 0;
@@ -228,8 +240,16 @@ function bootstrap() {
     for (var m = 1; m <= 12; m++) b['m' + m] = Number(b['m' + m]) || 0;
   });
 
+  // подтверждающие документы кладём внутрь своей заявки
+  var byReq = {};
+  docs.forEach(function (d) {
+    (byReq[d.requestId] = byReq[d.requestId] || []).push(d);
+  });
+  requests.forEach(function (r) { r.docs = byReq[r.id] || []; });
+
   return {contracts: contracts, requests: requests, signers: publicSigners,
-          budget: budget, serverTime: new Date().toISOString()};
+          budget: budget, protocols: protocols,
+          serverTime: new Date().toISOString()};
 }
 
 /**
@@ -262,6 +282,95 @@ function saveBudget(p) {
       .setValues(all.map(function (b) { return toRow('budget', b); }));
   }
   return {saved: fresh.length};
+}
+
+/* ──────────────── протоколы Совета директоров ──────────────── */
+
+function saveProtocol(p) {
+  auth(p);
+  var x = p.protocol || {};
+  var o = {
+    id: x.id || uid('pr'),
+    number: String(x.number || '').trim(),
+    date: x.date || '',
+    company: x.company || '',
+    subject: x.subject || '',
+    decisions: x.decisions || '',
+    fileUrl: x.fileUrl || '',
+    fileName: x.fileName || '',
+    createdAt: x.createdAt || new Date().toISOString()
+  };
+  if (!o.number) throw new Error('Рақами протокол лозим аст · нужен номер протокола');
+  upsert('protocols', o);
+  return {id: o.id};
+}
+
+function deleteProtocol(p) {
+  auth(p);
+  var id = String(p.protocolId || '');
+  var row = rowIndexById('protocols', id);
+  if (row < 0) throw new Error('Протокол ёфт нашуд');
+  // контракты не удаляем, только снимаем ссылку
+  readAll('contracts').forEach(function (c) {
+    if (String(c.protocolId) === id) { c.protocolId = ''; upsert('contracts', c); }
+  });
+  sheet('protocols').deleteRow(row);
+  return {deleted: id};
+}
+
+/* ──────────── подтверждающие документы заявки ──────────────
+ * Файл приходит в base64, ложится в папку рядом с таблицей и
+ * открывается по ссылке: подписанты входят по логину, а не через Google.
+ */
+function docsFolder() {
+  var name = 'Ҳуҷҷатҳои дархостҳо';
+  var parents = DriveApp.getFileById(book().getId()).getParents();
+  var root = parents.hasNext() ? parents.next() : DriveApp.getRootFolder();
+  var it = root.getFoldersByName(name);
+  return it.hasNext() ? it.next() : root.createFolder(name);
+}
+
+function uploadDoc(p) {
+  var s = auth(p);
+  var reqId = String(p.requestId || '');
+  if (!reqId) throw new Error('Дархост нишон дода нашуд');
+  if (!p.data) throw new Error('Файл холӣ аст · файл пустой');
+
+  var blob = Utilities.newBlob(
+    Utilities.base64Decode(p.data),
+    p.mime || 'application/octet-stream',
+    p.name || 'hujjat'
+  );
+  var file = docsFolder().createFile(blob);
+  try {
+    file.setSharing(DriveApp.Access.ANYONE_WITH_LINK, DriveApp.Permission.VIEW);
+  } catch (e) { /* домен может запрещать внешний доступ — ссылка останется внутренней */ }
+
+  var o = {
+    id: uid('d'), requestId: reqId,
+    kind: p.kind || 'Дигар',
+    name: file.getName(), url: file.getUrl(),
+    size: file.getSize(), addedAt: new Date().toISOString(),
+    byName: s.name || ''
+  };
+  upsert('docs', o);
+  return o;
+}
+
+function deleteDoc(p) {
+  auth(p);
+  var id = String(p.docId || '');
+  var row = rowIndexById('docs', id);
+  if (row < 0) throw new Error('Ҳуҷҷат ёфт нашуд');
+  var rec = readAll('docs').filter(function (d) { return d.id === id; })[0];
+  if (rec && rec.url) {
+    try {
+      var m = /[-\w]{25,}/.exec(rec.url);
+      if (m) DriveApp.getFileById(m[0]).setTrashed(true);
+    } catch (e) { /* файла может уже не быть — строку всё равно убираем */ }
+  }
+  sheet('docs').deleteRow(row);
+  return {deleted: id};
 }
 
 /* ─────────────────────── вход и сессии ───────────────────────
@@ -382,7 +491,7 @@ function contractRow(c) {
     allocAmount: n(c.allocAmount), allocTjs: n(c.allocTjs),
     req2Rate: n(c.req2Rate), req2Amount: n(c.req2Amount), req2Tjs: n(c.req2Tjs),
     alloc2Rate: n(c.alloc2Rate), alloc2Amount: n(c.alloc2Amount), alloc2Tjs: n(c.alloc2Tjs),
-    allocTotal: n(c.allocTotal), code: c.code || ''
+    allocTotal: n(c.allocTotal), code: c.code || '', protocolId: c.protocolId || ''
   };
   var plan = c.plan || [];
   for (var i = 0; i < 3; i++) {
@@ -420,7 +529,7 @@ function saveRequest(p) {
     purpose: r.purpose || '', purposeShort: r.purposeShort || '',
     submittedAt: existing ? existing.submittedAt : '', paidAt: existing ? existing.paidAt : '',
     createdAt: existing ? existing.createdAt : new Date().toISOString(),
-    code: r.code || ''
+    code: r.code || '', tranche: r.tranche || ''
   });
 
   removeWhere('items', 'requestId', r.id);
