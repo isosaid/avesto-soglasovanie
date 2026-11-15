@@ -16,6 +16,7 @@ var SHEETS = {
   approvals: 'Имзоҳо',
   signers:   'Имзокунандагон',
   budget:    'Буҷет',
+  log:       'Журнал',
   protocols: 'Протоколҳо',
   docs:      'Ҳуҷҷатҳо'
 };
@@ -32,6 +33,8 @@ var COLS = {
   signers:   ['key','posTj','posRu','name','login','password','order','role'],
   // план инвестиционного бюджета: строка на организацию, год и код расхода
   budget:    ['id','company','year','code','m1','m2','m3','m4','m5','m6','m7','m8','m9','m10','m11','m12'],
+  // журнал действий: кто, когда и что сделал
+  log:       ['id','at','byKey','byName','action','object','details'],
   // протоколы заседания Совета директоров
   protocols: ['id','number','date','company','subject','decisions','fileUrl','fileName','createdAt'],
   // подтверждающие документы заявки (файлы лежат на Диске)
@@ -60,6 +63,8 @@ function doPost(e) {
     var action = body.action;
     var p = body.payload || {};
     var out;
+    var who = whoIs(p);                    // кто действует — до действия: после выхода токена уже нет
+    var subj = describeAction(action, p);  // что за объект — до действия: после удаления его не прочитать
     switch (action) {
       case 'saveContract':  out = saveContract(p); break;
       case 'saveRequest':   out = saveRequest(p); break;
@@ -79,6 +84,8 @@ function doPost(e) {
       case 'deleteDoc':     out = deleteDoc(p); break;
       default: throw new Error('Амали номаълум · неизвестное действие: ' + action);
     }
+    if (action === 'login') who = {key: out.role.key, name: out.role.name};
+    writeLog(who, action, subj);
     return json({ok: true, data: out, state: bootstrap()});
   } catch (err) {
     return json({ok: false, error: String(err && err.message || err)});
@@ -187,6 +194,8 @@ function bootstrap() {
   var budget    = readAll('budget');
   var protocols = readAll('protocols');
   var docs      = readAll('docs');
+  var log       = readAll('log');
+  log = log.slice(Math.max(0, log.length - 300)).reverse();
 
   contracts.forEach(function (c) {
     c.rate = Number(c.rate) || 0;
@@ -249,7 +258,7 @@ function bootstrap() {
   requests.forEach(function (r) { r.docs = byReq[r.id] || []; });
 
   return {contracts: contracts, requests: requests, signers: publicSigners,
-          budget: budget, protocols: protocols,
+          budget: budget, protocols: protocols, log: log,
           serverTime: new Date().toISOString()};
 }
 
@@ -283,6 +292,83 @@ function saveBudget(p) {
       .setValues(all.map(function (b) { return toRow('budget', b); }));
   }
   return {saved: fresh.length};
+}
+
+/* ───────────────────── журнал действий ─────────────────────
+ * Каждое успешное действие — строка: когда, кто, что и над чем.
+ * Пишется из doPost, поэтому мимо журнала не проходит ничего.
+ */
+function whoIs(p) {
+  try {
+    var s = auth(p);
+    return {key: s.key, name: s.name};
+  } catch (e) {
+    return {key: '', name: ''};
+  }
+}
+
+function describeAction(action, p) {
+  try {
+    var r, c, x;
+    switch (action) {
+      case 'saveContract':
+        c = p.contract || {};
+        return {object: 'Шартнома № ' + (c.no || ''), details: c.id ? 'таҳрир · правка' : 'нав · новый'};
+      case 'deleteContract':
+        c = readAll('contracts').filter(function (k) { return String(k.id) === String(p.contractId); })[0] || {};
+        return {object: 'Шартнома № ' + (c.no || p.contractId), details: c.supplier || ''};
+      case 'saveRequest':
+        r = p.request || {};
+        return {object: 'Дархост № ' + (r.number || ''),
+                details: (r.id && findRequest(r.id) ? 'таҳрир · правка' : 'нав · новая') + (p.force ? ' · визы сняты' : '')};
+      case 'submitRequest':
+      case 'deleteRequest':
+        r = findRequest(p.requestId) || {};
+        return {object: 'Дархост № ' + (r.number || p.requestId), details: ''};
+      case 'decide':
+        r = findRequest(p.requestId) || {};
+        return {object: 'Дархост № ' + (r.number || p.requestId),
+                details: (p.decision === 'rejected' ? 'рад · отказ' : 'имзо · виза') +
+                         (p.comment ? ': ' + String(p.comment).slice(0, 200) : '')};
+      case 'markPaid':
+        r = findRequest(p.requestId) || {};
+        return {object: 'Дархост № ' + (r.number || p.requestId),
+                details: (p.amount ? p.amount + ' ' : '') + (p.date || '')};
+      case 'importRegistry':
+        return {object: 'Реестр', details: 'шартномаҳо: ' + ((p.contracts || []).length)};
+      case 'saveBudget':
+        var sum = 0;
+        (p.rows || []).forEach(function (b) { for (var m = 1; m <= 12; m++) sum += Number(b['m' + m]) || 0; });
+        return {object: 'Буҷет ' + (p.year || '') + ' · ' + (p.company || ''), details: 'нақша: ' + sum};
+      case 'saveProtocol':
+        x = p.protocol || {};
+        return {object: 'Протокол № ' + (x.number || ''), details: x.id ? 'таҳрир · правка' : 'нав · новый'};
+      case 'deleteProtocol':
+        x = readAll('protocols').filter(function (k) { return String(k.id) === String(p.protocolId); })[0] || {};
+        return {object: 'Протокол № ' + (x.number || p.protocolId), details: ''};
+      case 'uploadDoc':
+        r = findRequest(p.requestId) || {};
+        return {object: 'Дархост № ' + (r.number || p.requestId), details: (p.kind || '') + ': ' + (p.name || '')};
+      case 'deleteDoc':
+        x = readAll('docs').filter(function (k) { return String(k.id) === String(p.docId); })[0] || {};
+        r = findRequest(x.requestId) || {};
+        return {object: 'Дархост № ' + (r.number || ''), details: (x.kind || '') + ': ' + (x.name || '')};
+      default:
+        return {object: '', details: ''};
+    }
+  } catch (e) {
+    return {object: '', details: ''};
+  }
+}
+
+function writeLog(who, action, subj) {
+  try {
+    sheet('log').appendRow([
+      uid('l'), new Date().toISOString(),
+      (who && who.key) || '', (who && who.name) || '',
+      action, (subj && subj.object) || '', (subj && subj.details) || ''
+    ]);
+  } catch (e) { /* журнал не должен ронять само действие */ }
 }
 
 /* ──────────────── протоколы Совета директоров ──────────────── */
@@ -510,6 +596,7 @@ function contractRow(c) {
 }
 
 function saveContract(p) {
+  auth(p);
   var c = p.contract || {};
   if (!c.no) throw new Error('Рақами шартнома холӣ · не указан номер контракта');
   if (!c.id) c.id = uid('c');
@@ -518,6 +605,7 @@ function saveContract(p) {
 }
 
 function saveRequest(p) {
+  auth(p);
   var r = p.request || {};
   if (!r.number) throw new Error('Рақами дархост холӣ · не указан номер заявки');
   var isNew = !r.id;
@@ -555,6 +643,7 @@ function findRequest(id) {
 }
 
 function submitRequest(p) {
+  auth(p);
   var r = findRequest(p.requestId);
   if (!r) throw new Error('Дархост ёфт нашуд · заявка не найдена');
   if (r.submittedAt) throw new Error('Аллакай фиристода шуд · уже отправлена');
@@ -680,6 +769,7 @@ function deleteRequest(p) {
  * перезаписываются целиком; заявки, визы и подписанты не трогаются.
  */
 function importRegistry(p) {
+  auth(p);
   var list = p.contracts || [];
   if (!list.length) throw new Error('Рӯйхат холӣ · список контрактов пуст');
 

@@ -293,6 +293,7 @@ function applyState(d){
   S.requests=d.requests||[];
   S.budget=d.budget||[];
   S.protocols=d.protocols||[];
+  S.log=d.log||[];
   if(d.signers&&d.signers.length)S.signers=d.signers;
   S.loaded=true; S.error=null;
 }
@@ -385,6 +386,7 @@ function render(){
     (S.tab==="budget"?renderBudget():
      S.tab==="protocols"?renderProtocols():
      S.tab==="docs"?renderDocs():
+     S.tab==="log"?renderLog():
      S.tab==="requests"?renderRequests():renderContracts());
   wire();
   var sub=document.getElementById("brandSub");
@@ -1158,6 +1160,50 @@ function renderDocs(){
   return h;
 }
 
+
+/* ═══ журнал: кто, когда и что сделал ═══ */
+var LOG_ACTIONS = {
+  login:"Даромад · вход", logout:"Баромад · выход", changePassword:"Ивази рамз · смена пароля",
+  saveContract:"Шартнома сабт шуд · контракт сохранён", deleteContract:"Шартнома нест шуд · контракт удалён",
+  saveRequest:"Дархост сабт шуд · заявка сохранена", submitRequest:"Ба мувофиқа фиристода шуд · отправлена",
+  deleteRequest:"Дархост нест шуд · заявка удалена",
+  decide:"Қарор · решение", markPaid:"Пардохт қайд шуд · оплата отмечена",
+  importRegistry:"Импорт аз Excel", saveBudget:"Нақшаи буҷет · план бюджета",
+  saveProtocol:"Протокол сабт шуд · сохранён", deleteProtocol:"Протокол нест шуд · удалён",
+  uploadDoc:"Ҳуҷҷат замима шуд · документ приложен", deleteDoc:"Ҳуҷҷат нест шуд · документ удалён"
+};
+function logTime(iso){
+  var d=new Date(iso); if(isNaN(d.getTime()))return esc(String(iso||""));
+  function z(n){return (n<10?"0":"")+n;}
+  return z(d.getDate())+"."+z(d.getMonth()+1)+"."+d.getFullYear()+" "+z(d.getHours())+":"+z(d.getMinutes());
+}
+function renderLog(){
+  var all=S.log||[];
+  var people=[];
+  all.forEach(function(x){var n=x.byName||"—";if(people.indexOf(n)<0)people.push(n);});
+  people.sort(function(a,b){return a.localeCompare(b,"ru");});
+  var who=S.logWho||"all";
+  var list=all.filter(function(x){return who==="all"||(x.byName||"—")===who;});
+  var h='<section class="panel"><div class="bhead"><div><h2>Журнал</h2>'+
+    "<p>Кӣ, кай ва чӣ кор кард · кто, когда и что сделал — последние "+all.length+" действий</p></div>"+
+    '<div class="btools"><select id="logWho"><option value="all">Ҳама · все</option>'+
+    people.map(function(n){
+      return '<option value="'+esc(n)+'"'+(n===who?" selected":"")+">"+esc(n)+"</option>";
+    }).join("")+"</select></div></div>";
+  if(!all.length){
+    return h+'<p class="hint" style="padding:18px 20px">Журнал холӣ аст · записей пока нет. '+
+      "Они появятся после первого действия на сайте.</p></section>";
+  }
+  h+='<div class="tablewrap scrollx"><table class="grid loggrid"><thead><tr><th>Вақт</th><th>Кӣ</th>'+
+    "<th>Амал</th><th>Объект</th><th>Тафсилот</th></tr></thead><tbody>"+
+    list.map(function(x){
+      return "<tr><td class=mono>"+logTime(x.at)+"</td><td>"+esc(x.byName||"—")+"</td>"+
+        "<td>"+esc(LOG_ACTIONS[x.action]||x.action||"")+"</td>"+
+        "<td>"+esc(x.object||"")+"</td><td>"+esc(x.details||"")+"</td></tr>";
+    }).join("")+"</tbody></table></div></section>";
+  return h;
+}
+
 function renderBudget(){
   var years={},nowY=new Date().getFullYear();
   years[nowY]=1; years[S.bYear]=1;
@@ -1551,6 +1597,8 @@ function wire(){
   els=view.querySelectorAll("[data-act]");
   for(i=0;i<els.length;i++)(function(b){b.onclick=function(){act(b.dataset.act,b.dataset.id,b);};})(els[i]);
   var be=document.getElementById("bEdit"); if(be)be.onclick=editBudget;
+  var lw=document.getElementById("logWho");
+  if(lw)lw.onchange=function(){S.logWho=lw.value;render();};
   var nd=document.getElementById("newDoc"); if(nd)nd.onclick=function(){addDoc(null);};
   var np=document.getElementById("newProto"); if(np)np.onclick=function(){editProto(null);};
   els=view.querySelectorAll("tr.clickrow[data-proto]");
