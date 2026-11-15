@@ -1145,15 +1145,16 @@ function renderDocs(){
         kinds.map(function(k){
           var ds=docs.filter(function(d){return (d.kind||"Дигар")===k;});
           return '<td class="c">'+(ds.length?ds.map(function(d){
-            return '<a class="dok" href="'+esc(d.url)+'" target="_blank" rel="noopener" title="'+
-              esc(d.name||"")+'">✓</a>';
+            return '<span class="dcell"><a class="dok" href="'+esc(d.url)+'" target="_blank" rel="noopener" title="'+
+              esc(d.name||"")+'">✓</a><button class="x" data-act="deldoc" data-id="'+esc(d.id)+
+              '" title="Нест кардан · удалить '+esc(d.name||"")+'">×</button></span>';
           }).join(" "):'<span class="dno">—</span>')+"</td>";
         }).join("")+
         '<td class="r"><button class="plus" data-act="adddoc" data-id="'+esc(r.id)+
         '" title="Ба ин дархост ҳуҷҷат замима кардан">+</button></td></tr>';
     }).join("")+"</tbody></table></div>"+
     '<p class="hint bhint">✓ — ҳуҷҷат замима шудааст (пахш кунед, кушода мешавад) · '+
-    "— ещё не приложен · «+» в строке прикладывает документ к этой заявке</p></section>";
+    "— ещё не приложен · × рядом с галочкой удаляет файл · «+» в строке прикладывает документ</p></section>";
   return h;
 }
 
