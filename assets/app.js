@@ -2564,6 +2564,29 @@ function loadFromSheet(id){
 }
 
 /* ═══ запуск ═══ */
+/* ── фон: светлый или тёмный, выбор запоминается ── */
+function themeNow(){
+  var t=document.documentElement.getAttribute("data-theme");
+  if(t==="light"||t==="dark")return t;
+  return (window.matchMedia&&window.matchMedia("(prefers-color-scheme: dark)").matches)?"dark":"light";
+}
+function paintThemeBtn(){
+  var b=document.getElementById("themeBtn"); if(!b)return;
+  var dark=themeNow()==="dark";
+  b.textContent=dark?"☀":"☾";
+  b.title=dark?"Заминаи равшан · светлый фон":"Заминаи торик · тёмный фон";
+}
+(function(){
+  var b=document.getElementById("themeBtn"); if(!b)return;
+  b.onclick=function(){
+    var next=themeNow()==="dark"?"light":"dark";
+    document.documentElement.setAttribute("data-theme",next);
+    lsSet("avesto.theme",next);
+    paintThemeBtn();
+  };
+  paintThemeBtn();
+})();
+
 S.session=loadSession();
 S.me=S.session?S.session.role.key:null;
 if(S.session)S.comp=lsGet("avesto.lastCompany")||"all";   // организация, выбранная при входе
