@@ -2023,7 +2023,9 @@ function openAccount(){
   var r=S.session&&S.session.role; if(!r)return;
   modal({
     title:"Ҳисоби корбар · учётная запись",
-    body:'<div class="acc"><b>'+esc(r.name)+"</b><span>"+esc(r.posRu)+"</span>"+
+    body:'<div class="acc"><b>'+esc(r.name)+"</b>"+
+      (r.admin?'<span class="adm">Маъмур · администратор — визы не ставит</span>':"")+
+      "<span>"+esc(r.posRu)+"</span>"+
       (r.posTj?"<span>"+esc(r.posTj)+"</span>":"")+"</div>"+
       (API?'<button class="btn wide" id="acPw" type="button">Иваз кардани рамз · сменить пароль</button>':"")+
       '<button class="btn wide dang" id="acOut" type="button">Баромадан · выйти</button>',

@@ -29,7 +29,7 @@ var COLS = {
   requests:  ['id','number','date','company','contractId','currency','rate','purpose','purposeShort','submittedAt','paidAt','createdAt','code','tranche'],
   items:     ['id','requestId','name','unit','qty','price'],
   approvals: ['id','requestId','roleKey','decision','at','byName','comment'],
-  signers:   ['key','posTj','posRu','name','login','password','order'],
+  signers:   ['key','posTj','posRu','name','login','password','order','role'],
   // план инвестиционного бюджета: строка на организацию, год и код расхода
   budget:    ['id','company','year','code','m1','m2','m3','m4','m5','m6','m7','m8','m9','m10','m11','m12'],
   // протоколы заседания Совета директоров
@@ -224,6 +224,7 @@ function bootstrap() {
   var publicSigners = signers
     .filter(function (s) {
       var k = String(s.key || '').trim();
+      if (isAdmin(s)) return false;          // администратор в маршрут не входит
       if (!k || seen[k]) return false;
       seen[k] = true;
       return true;
@@ -388,6 +389,12 @@ function sha256(s) {
 }
 function isHash(s) { return /^[0-9a-f]{64}$/.test(String(s || '')); }
 
+/** Маршрут согласования: все, кроме администраторов. */
+function isAdmin(s) { return String((s && s.role) || '').trim().toLowerCase() === 'admin'; }
+function routeSigners() {
+  return readAll('signers').filter(function (s) { return !isAdmin(s); });
+}
+
 function findSigner(field, value) {
   var signers = readAll('signers');
   for (var i = 0; i < signers.length; i++) {
@@ -420,7 +427,8 @@ function login(p) {
     .setProperty('s_' + token, JSON.stringify({key: s.key, until: until}));
   return {
     token: token, expiresAt: new Date(until).toISOString(),
-    role: {key: s.key, name: s.name, posTj: s.posTj, posRu: s.posRu, order: Number(s.order) || 0}
+    role: {key: s.key, name: s.name, posTj: s.posTj, posRu: s.posRu, order: Number(s.order) || 0,
+           admin: isAdmin(s)}
   };
 }
 
@@ -565,7 +573,8 @@ function decide(p) {
   if (!r.submittedAt) throw new Error('Дархост ҳанӯз фиристода нашуд · заявка ещё не отправлена на согласование');
   if (r.paidAt) throw new Error('Дархост пардохт шуд · заявка уже оплачена');
 
-  var signers = readAll('signers').sort(function (a, b) { return (Number(a.order) || 0) - (Number(b.order) || 0); });
+  if (isAdmin(s)) throw new Error('Маъмур имзо намегузорад · администратор визы не ставит');
+  var signers = routeSigners().sort(function (a, b) { return (Number(a.order) || 0) - (Number(b.order) || 0); });
   var approvals = readAll('approvals').filter(function (a) { return String(a.requestId) === String(r.id); });
   var byRole = {};
   approvals.forEach(function (a) { byRole[a.roleKey] = a; });
@@ -615,7 +624,7 @@ function markPaid(p) {
   if (!r) throw new Error('Дархост ёфт нашуд · заявка не найдена');
   if (r.paidAt) throw new Error('Пардохт аллакай қайд шуд · оплата уже отмечена');
 
-  var signers = readAll('signers');
+  var signers = routeSigners();
   var approvals = readAll('approvals').filter(function (a) { return String(a.requestId) === String(r.id); });
   var okCount = approvals.filter(function (a) { return a.decision === 'approved'; }).length;
   if (okCount < signers.length) throw new Error('Масир нопурра · маршрут не пройден полностью');

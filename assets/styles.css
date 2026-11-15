@@ -393,3 +393,4 @@ table.docgrid .dno{color:var(--ink-faint)}
 table.docgrid .dcell{display:inline-flex;align-items:center;gap:3px;white-space:nowrap}
 table.docgrid .x{border:0;background:none;color:var(--no);font-size:15px;line-height:1;cursor:pointer;padding:0 2px;opacity:.55}
 table.docgrid .x:hover{opacity:1}
+.acc .adm{color:var(--accent);font-weight:700}
