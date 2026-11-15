@@ -381,3 +381,12 @@ ul.doclist .x{border:0;background:none;color:var(--no);font-size:17px;line-heigh
 table.trgrid{width:100%;margin-top:10px;font-size:13px}
 table.trgrid a.trlink{color:var(--accent)}
 p.pre{white-space:pre-wrap}
+.splitbar{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin-bottom:12px;font-size:13px;
+  padding:9px 11px;background:var(--paper);border:1px dashed var(--rule);border-radius:7px}
+.splitbar select{width:auto;padding:4px 6px}
+.splitbar input{width:110px;padding:4px 8px}
+table.docgrid{width:100%;margin-top:14px;font-size:13px}
+table.docgrid th.c,table.docgrid td.c{text-align:center}
+table.docgrid a.dok{color:var(--ok);font-weight:700;text-decoration:none;font-size:15px}
+table.docgrid .dno{color:var(--ink-faint)}
+.bhead p.borg{font-family:var(--serif);font-weight:700;font-size:15px;color:var(--ink);margin:0 0 2px}
