@@ -82,11 +82,17 @@ function doPost(e) {
       case 'deleteProtocol':out = deleteProtocol(p); break;
       case 'uploadDoc':     out = uploadDoc(p); break;
       case 'deleteDoc':     out = deleteDoc(p); break;
+      case 'getLog':
+        if (!who.key || !isAdmin(findSigner('key', who.key)))
+          throw new Error('Журнал танҳо барои маъмур · журнал доступен только администратору');
+        out = {};
+        break;
       default: throw new Error('Амали номаълум · неизвестное действие: ' + action);
     }
     if (action === 'login') who = {key: out.role.key, name: out.role.name};
-    writeLog(who, action, subj);
-    return json({ok: true, data: out, state: bootstrap()});
+    if (action !== 'getLog') writeLog(who, action, subj);
+    var admin = action !== 'logout' && !!who.key && isAdmin(findSigner('key', who.key));
+    return json({ok: true, data: out, state: bootstrap(admin)});
   } catch (err) {
     return json({ok: false, error: String(err && err.message || err)});
   } finally {
@@ -184,7 +190,7 @@ function uid(prefix) {
 
 /* ─────────────────────────── чтение ─────────────────────────── */
 
-function bootstrap() {
+function bootstrap(withLog) {
   var contracts = readAll('contracts');
   var payments  = readAll('payments');
   var requests  = readAll('requests');
@@ -194,8 +200,12 @@ function bootstrap() {
   var budget    = readAll('budget');
   var protocols = readAll('protocols');
   var docs      = readAll('docs');
-  var log       = readAll('log');
-  log = log.slice(Math.max(0, log.length - 300)).reverse();
+  // журнал видит только администратор: в общий ответ он не попадает
+  var log = null;
+  if (withLog) {
+    log = readAll('log');
+    log = log.slice(Math.max(0, log.length - 300)).reverse();
+  }
 
   contracts.forEach(function (c) {
     c.rate = Number(c.rate) || 0;
@@ -258,7 +268,7 @@ function bootstrap() {
   requests.forEach(function (r) { r.docs = byReq[r.id] || []; });
 
   return {contracts: contracts, requests: requests, signers: publicSigners,
-          budget: budget, protocols: protocols, log: log,
+          budget: budget, protocols: protocols, log: log || undefined,
           serverTime: new Date().toISOString()};
 }
 

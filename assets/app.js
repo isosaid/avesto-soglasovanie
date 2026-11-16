@@ -293,7 +293,7 @@ function applyState(d){
   S.requests=d.requests||[];
   S.budget=d.budget||[];
   S.protocols=d.protocols||[];
-  S.log=d.log||[];
+  if(d.log)S.log=d.log;            // журнал приходит только администратору и только в ответ на POST
   if(d.signers&&d.signers.length)S.signers=d.signers;
   S.loaded=true; S.error=null;
 }
@@ -379,6 +379,7 @@ function clearSession(){ try{localStorage.removeItem("avesto.session");}catch(e)
 /* ═══ рендер ═══ */
 var view=document.getElementById("view");
 function render(){
+  syncAdminTabs();
   var gate=!S.session;                       // до входа — только экран входа
   document.body.classList.toggle("gate",gate);
   if(gate){ view.innerHTML=renderGate(); wireGate(); return; }
@@ -386,7 +387,7 @@ function render(){
     (S.tab==="budget"?renderBudget():
      S.tab==="protocols"?renderProtocols():
      S.tab==="docs"?renderDocs():
-     S.tab==="log"?renderLog():
+     (S.tab==="log"&&isAdminMe())?renderLog():
      S.tab==="requests"?renderRequests():renderContracts());
   wire();
   var sub=document.getElementById("brandSub");
@@ -1177,6 +1178,20 @@ function logTime(iso){
   function z(n){return (n<10?"0":"")+n;}
   return z(d.getDate())+"."+z(d.getMonth()+1)+"."+d.getFullYear()+" "+z(d.getHours())+":"+z(d.getMinutes());
 }
+function isAdminMe(){ return !!(S.session&&S.session.role&&S.session.role.admin); }
+/* вкладка «Журнал» есть только у администратора; при входе в неё тянем свежие записи */
+function syncAdminTabs(){
+  var t=document.querySelector('#tabs [data-tab="log"]');
+  if(t)t.hidden=!isAdminMe();
+  if(S.tab==="log"&&!isAdminMe())S.tab="budget";
+}
+function loadLog(){
+  if(!API||!isAdminMe())return;
+  apiPost("getLog",{}).then(function(j){
+    if(j.state)applyState(j.state);
+    if(S.tab==="log")render();
+  }).catch(function(){});
+}
 function renderLog(){
   var all=S.log||[];
   var people=[];
@@ -1626,6 +1641,7 @@ function wire(){
 document.getElementById("tabs").onclick=function(e){
   var b=e.target.closest("[data-tab]"); if(!b)return;
   S.tab=b.dataset.tab; S.sheetFor=null;
+  if(S.tab==="log")loadLog();
   var all=document.querySelectorAll("#tabs [data-tab]");
   for(var i=0;i<all.length;i++)all[i].setAttribute("aria-selected",String(all[i]===b));
   render();
