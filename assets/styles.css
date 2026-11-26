@@ -396,3 +396,10 @@ table.docgrid .x:hover{opacity:1}
 .acc .adm{color:var(--accent);font-weight:700}
 table.loggrid{width:100%;margin-top:14px;font-size:13px}
 table.loggrid td.mono{white-space:nowrap}
+.codebox{overflow-x:auto;max-height:55vh;margin-bottom:10px}
+table.codegrid{width:100%;font-size:13px}
+table.codegrid input,table.codegrid select{width:100%;padding:5px 7px;font-size:13px}
+table.codegrid td:first-child{width:90px}
+table.codegrid td:first-child input{font-family:var(--mono)}
+table.codegrid .x{border:0;background:none;color:var(--no);font-size:17px;cursor:pointer;padding:0 4px}
+table.bgrid td.mono,.bedit td.mono{white-space:nowrap}

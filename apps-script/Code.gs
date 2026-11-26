@@ -17,6 +17,7 @@ var SHEETS = {
   signers:   'Имзокунандагон',
   budget:    'Буҷет',
   log:       'Журнал',
+  codes:     'Моддаҳо',
   protocols: 'Протоколҳо',
   docs:      'Ҳуҷҷатҳо'
 };
@@ -33,6 +34,8 @@ var COLS = {
   signers:   ['key','posTj','posRu','name','login','password','order','role'],
   // план инвестиционного бюджета: строка на организацию, год и код расхода
   budget:    ['id','company','year','code','m1','m2','m3','m4','m5','m6','m7','m8','m9','m10','m11','m12'],
+  // справочник статей бюджета: код, название, родительская группа
+  codes:     ['code','name','ru','parent','order'],
   // журнал действий: кто, когда и что сделал
   log:       ['id','at','byKey','byName','action','object','details'],
   // протоколы заседания Совета директоров
@@ -78,6 +81,7 @@ function doPost(e) {
       case 'logout':        out = logout(p); break;
       case 'changePassword': out = changePassword(p); break;
       case 'saveBudget':    out = saveBudget(p); break;
+      case 'saveCodes':     out = saveCodes(p); break;
       case 'saveProtocol':  out = saveProtocol(p); break;
       case 'deleteProtocol':out = deleteProtocol(p); break;
       case 'uploadDoc':     out = uploadDoc(p); break;
@@ -200,6 +204,7 @@ function bootstrap(withLog) {
   var budget    = readAll('budget');
   var protocols = readAll('protocols');
   var docs      = readAll('docs');
+  var codes     = readAll('codes').sort(function (a, b) { return (Number(a.order) || 0) - (Number(b.order) || 0); });
   // журнал видит только администратор: в общий ответ он не попадает
   var log = null;
   if (withLog) {
@@ -268,7 +273,7 @@ function bootstrap(withLog) {
   requests.forEach(function (r) { r.docs = byReq[r.id] || []; });
 
   return {contracts: contracts, requests: requests, signers: publicSigners,
-          budget: budget, protocols: protocols, log: log || undefined,
+          budget: budget, protocols: protocols, log: log || undefined, codes: codes,
           serverTime: new Date().toISOString()};
 }
 
@@ -350,6 +355,8 @@ function describeAction(action, p) {
         var sum = 0;
         (p.rows || []).forEach(function (b) { for (var m = 1; m <= 12; m++) sum += Number(b['m' + m]) || 0; });
         return {object: 'Буҷет ' + (p.year || '') + ' · ' + (p.company || ''), details: 'нақша: ' + sum};
+      case 'saveCodes':
+        return {object: 'Моддаҳои буҷет · статьи бюджета', details: 'моддаҳо: ' + ((p.codes || []).length)};
       case 'saveProtocol':
         x = p.protocol || {};
         return {object: 'Протокол № ' + (x.number || ''), details: x.id ? 'таҳрир · правка' : 'нав · новый'};
@@ -379,6 +386,59 @@ function writeLog(who, action, subj) {
       action, (subj && subj.object) || '', (subj && subj.details) || ''
     ]);
   } catch (e) { /* журнал не должен ронять само действие */ }
+}
+
+/* ──────────────── справочник статей бюджета ────────────────
+ * Приходит целиком. Код — только цифры и уникален, у статьи один уровень
+ * вложенности. Статью, на которую уже ссылаются заявки, контракты или план,
+ * удалить нельзя — иначе суммы молча выпали бы из бюджета.
+ */
+function saveCodes(p) {
+  auth(p);
+  var list = (p.codes || []).map(function (c, i) {
+    return {
+      code: String(c.code || '').replace(/\s+/g, ''),
+      name: String(c.name || '').trim(),
+      ru: String(c.ru || '').trim(),
+      parent: String(c.parent || '').replace(/\s+/g, ''),
+      order: i + 1
+    };
+  });
+  if (!list.length) throw new Error('Рӯйхат холӣ · список статей пуст');
+
+  var seen = {};
+  list.forEach(function (c) {
+    if (!/^\d{1,10}$/.test(c.code)) throw new Error('Рамз бояд рақам бошад · код из цифр: «' + c.code + '»');
+    if (seen[c.code]) throw new Error('Рамз такрор шуд · код повторяется: ' + c.code);
+    if (!c.name) throw new Error('Номгӯй холӣ · нет названия у кода ' + c.code);
+    seen[c.code] = c;
+  });
+  list.forEach(function (c) {
+    if (!c.parent) return;
+    if (c.parent === c.code) throw new Error('Модда наметавонад гурӯҳи худ бошад · ' + c.code);
+    if (!seen[c.parent]) throw new Error('Гурӯҳ ёфт нашуд · нет группы ' + c.parent + ' для ' + c.code);
+    if (seen[c.parent].parent) throw new Error('Танҳо як сатҳ · группа ' + c.parent + ' сама входит в группу');
+  });
+
+  // удаляемые статьи не должны быть в работе
+  var used = {};
+  readAll('requests').forEach(function (r) { if (r.code) used[r.code] = 'дархост № ' + r.number; });
+  readAll('contracts').forEach(function (c) { if (c.code) used[c.code] = used[c.code] || 'шартнома № ' + c.no; });
+  readAll('budget').forEach(function (b) {
+    var sum = 0; for (var m = 1; m <= 12; m++) sum += Number(b['m' + m]) || 0;
+    if (sum) used[b.code] = used[b.code] || 'нақшаи ' + b.year;
+  });
+  var old = readAll('codes');
+  old.forEach(function (c) {
+    if (!seen[c.code] && used[c.code])
+      throw new Error('Рамзи ' + c.code + ' истифода мешавад (' + used[c.code] + ') · статья в работе, удалить нельзя');
+  });
+
+  var sh = sheet('codes');
+  if (sh.getLastRow() > 1) sh.getRange(2, 1, sh.getLastRow() - 1, COLS.codes.length).clearContent();
+  sh.getRange(2, 1, list.length, COLS.codes.length)
+    .setValues(list.map(function (c) { return toRow('codes', c); }));
+  return {saved: list.length};
 }
 
 /* ──────────────── протоколы Совета директоров ──────────────── */

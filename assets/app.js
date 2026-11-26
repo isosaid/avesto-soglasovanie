@@ -84,7 +84,7 @@ function companyOptions(cur){
 }
 
 /* ─── статьи инвестиционного бюджета (лист «КОД» из буҷети 2026) ─── */
-var BUDGET_CODES = [
+var DEFAULT_CODES = [
   {code:"1000", name:"Хароҷотҳои сохтмонӣ:",            ru:"Строительные расходы", group:true},
   {code:"1010", name:"Хариди масолеҳи сохтмонӣ",        ru:"Закуп стройматериалов", parent:"1000"},
   {code:"1020", name:"Ҳаққи кори кормандони сохтмон",   ru:"Оплата труда строителей", parent:"1000"},
@@ -95,6 +95,19 @@ var BUDGET_CODES = [
   {code:"4000", name:"Дигар хароҷотҳо",                 ru:"Прочие расходы"}
 ];
 /* «1000» в таблице холдинга пишется как «1 000» */
+/* Рабочий справочник: из листа «Моддаҳо», а пока он пуст — исходные восемь
+   статей. Группой считается статья, у которой есть подстатьи. */
+var BUDGET_CODES = normCodes(DEFAULT_CODES);
+function normCodes(list){
+  var out=list.map(function(c){
+    return {code:String(c.code),name:c.name||"",ru:c.ru||"",parent:c.parent?String(c.parent):""};
+  });
+  out.forEach(function(c){
+    c.group=out.some(function(k){return k.parent===c.code;});
+    if(!c.parent)delete c.parent;
+  });
+  return out;
+}
 function codeLabel(code){
   var c=String(code||"");
   return c.length===4?c.slice(0,1)+" "+c.slice(1):c;
@@ -280,12 +293,13 @@ function apiPost(action,payload){
 function localLoad(){
   try{
     var raw=lsGet("avesto.soglasovanie.data");
-    if(raw){var d=JSON.parse(raw);S.contracts=d.contracts||[];S.requests=d.requests||[];S.budget=d.budget||[];}
+    if(raw){var d=JSON.parse(raw);S.contracts=d.contracts||[];S.requests=d.requests||[];S.budget=d.budget||[];
+      if(d.codes&&d.codes.length)BUDGET_CODES=normCodes(d.codes);}
   }catch(e){}
 }
 function localSave(){
   try{lsSet("avesto.soglasovanie.data",
-    JSON.stringify({contracts:S.contracts,requests:S.requests,budget:S.budget}));}catch(e){}
+    JSON.stringify({contracts:S.contracts,requests:S.requests,budget:S.budget,codes:BUDGET_CODES}));}catch(e){}
 }
 
 function applyState(d){
@@ -293,6 +307,7 @@ function applyState(d){
   S.requests=d.requests||[];
   S.budget=d.budget||[];
   S.protocols=d.protocols||[];
+  if(d.codes&&d.codes.length)BUDGET_CODES=normCodes(d.codes);
   if(d.log)S.log=d.log;            // журнал приходит только администратору и только в ответ на POST
   if(d.signers&&d.signers.length)S.signers=d.signers;
   S.loaded=true; S.error=null;
@@ -349,6 +364,8 @@ function localDo(action,payload,okMsg){
   }else if(action==="deleteRequest"){
     S.requests=S.requests.filter(function(x){return x.id!==payload.requestId;});
     if(S.selReq===payload.requestId)S.selReq=null;
+  }else if(action==="saveCodes"){
+    BUDGET_CODES=normCodes(payload.codes||[]);
   }else if(action==="deleteContract"){
     S.requests.forEach(function(x){if(x.contractId===payload.contractId)x.contractId="";});
     S.contracts=S.contracts.filter(function(x){return x.id!==payload.contractId;});
@@ -1260,6 +1277,7 @@ function renderBudget(){
     }).join("")+"</select>"+
     '<div class="seg"><button data-bmode="year" aria-pressed="'+(mode==="year")+'">Сол</button>'+
     '<button data-bmode="months" aria-pressed="'+(mode==="months")+'">Моҳҳо</button></div>'+
+    '<button class="btn" id="bCodes">Моддаҳо · статьи</button>'+
     '<button class="btn" id="bEdit">Нақшаро таҳрир кардан</button></div></div>';
 
   var body = mode==="year" ? budgetYear(rows,tot) : budgetMonths(rows,tot);
@@ -1334,6 +1352,147 @@ function budgetMonths(rows,tot){
 }
 
 /* ── ввод плана: статьи × месяцы ── */
+
+/* ═══ справочник статей: код, название, группа ═══
+ * Строки можно добавлять, переименовывать и удалять. Удалить статью,
+ * которая уже стоит в заявке, контракте или плане, сервер не даст. */
+function codeInUse(code){
+  code=String(code);
+  if(S.requests.some(function(r){return String(r.code||"")===code;}))return "дархост";
+  if(S.contracts.some(function(c){return String(c.code||"")===code;}))return "шартнома";
+  if(S.budget.some(function(b){
+    if(String(b.code)!==code)return false;
+    for(var m=1;m<=12;m++)if(Number(b["m"+m]))return true;
+    return false;
+  }))return "нақша";
+  return "";
+}
+
+function editCodes(){
+  var rows=BUDGET_CODES.map(function(c){
+    return {code:c.code,name:c.name,ru:c.ru||"",parent:c.parent||"",orig:c.code};
+  });
+
+  function groupOpts(cur,self){
+    return '<option value="">— асосӣ · верхний уровень —</option>'+
+      rows.filter(function(x){return !x.parent&&x.code&&x.code!==self;}).map(function(x){
+        return '<option value="'+esc(x.code)+'"'+(x.code===cur?" selected":"")+">"+
+          esc(codeLabel(x.code))+" "+esc(x.name)+"</option>";
+      }).join("");
+  }
+  function table(){
+    return '<table class="grid codegrid"><thead><tr><th>Рамз</th><th>Номгӯй (тоҷикӣ)</th>'+
+      "<th>Название (рус.)</th><th>Гурӯҳ · входит в</th><th></th></tr></thead><tbody>"+
+      rows.map(function(x,i){
+        var used=x.orig?codeInUse(x.orig):"";
+        return '<tr data-i="'+i+'"><td><input class="cc" inputmode="numeric" value="'+esc(x.code)+'"></td>'+
+          '<td><input class="cn" value="'+esc(x.name)+'"></td>'+
+          '<td><input class="cr" value="'+esc(x.ru)+'"></td>'+
+          '<td><select class="cp">'+groupOpts(x.parent,x.code)+"</select></td>"+
+          '<td class="r">'+(used
+            ?'<span class="hint" title="Статья в работе: '+esc(used)+'">●</span>'
+            :'<button class="x" type="button" data-del="'+i+'" title="Нест кардан">×</button>')+"</td></tr>";
+      }).join("")+"</tbody></table>";
+  }
+  function collect(root){
+    var trs=root.querySelectorAll(".codegrid tr[data-i]");
+    for(var i=0;i<trs.length;i++){
+      var x=rows[Number(trs[i].dataset.i)];
+      x.code=trs[i].querySelector(".cc").value.replace(/\s+/g,"");
+      x.name=trs[i].querySelector(".cn").value.trim();
+      x.ru=trs[i].querySelector(".cr").value.trim();
+      x.parent=trs[i].querySelector(".cp").value;
+    }
+  }
+
+  modal({
+    title:"Моддаҳои буҷет · статьи бюджета",
+    wide:true,
+    body:'<div class="codebox" id="codeBox">'+table()+"</div>"+
+      '<button class="btn" type="button" id="codeAdd">+ Моддаи нав · новая статья</button>'+
+      '<p class="hint">Код — только цифры, например 1030 или 5000. «Гурӯҳ» делает статью подстатьёй: '+
+      "её план и иҷроиш войдут в итог группы. ● — статья уже в заявке, контракте или плане, "+
+      "её можно переименовать, но не удалить.</p>",
+    okText:"Нигоҳ доштан",
+    onOpen:function(root){
+      var box=root.querySelector("#codeBox");
+      function redraw(){box.innerHTML=table();wire();}
+      function refreshGroups(){
+        var trs=box.querySelectorAll("tr[data-i]");
+        for(var i=0;i<trs.length;i++){
+          var x=rows[Number(trs[i].dataset.i)];
+          trs[i].querySelector(".cp").innerHTML=groupOpts(x.parent,x.code);
+        }
+      }
+      function wire(){
+        var ds=box.querySelectorAll("[data-del]");
+        for(var i=0;i<ds.length;i++)(function(b){
+          b.onclick=function(){collect(root);rows.splice(Number(b.dataset.del),1);redraw();};
+        })(ds[i]);
+        /* Смена кода или группы обновляет только списки групп: перерисовка
+           всей таблицы стёрла бы то, что человек в этот момент набирает. */
+        var cs=box.querySelectorAll(".cc");
+        for(var k=0;k<cs.length;k++){
+          cs[k].onfocus=function(){this.dataset.was=this.value.replace(/\s+/g,"");};
+          cs[k].onchange=function(){
+            var was=this.dataset.was||"",now=this.value.replace(/\s+/g,"");
+            collect(root);
+            if(was)rows.forEach(function(y){if(y.parent===was)y.parent=now;});
+            refreshGroups();
+          };
+        }
+        var ps=box.querySelectorAll(".cp");
+        for(var j=0;j<ps.length;j++)ps[j].onchange=function(){collect(root);refreshGroups();};
+      }
+      root.querySelector("#codeAdd").onclick=function(){
+        collect(root);
+        rows.push({code:"",name:"",ru:"",parent:"",orig:""});
+        redraw();
+        var last=box.querySelectorAll(".cc");
+        if(last.length)last[last.length-1].focus();
+      };
+      wire();
+    },
+    onOk:function(root){
+      collect(root);
+      var list=rows.filter(function(x){return x.code||x.name;});
+      var seen={};
+      for(var i=0;i<list.length;i++){
+        var x=list[i];
+        if(!/^\d{1,10}$/.test(x.code)){toast("Рамз бояд рақам бошад · код из цифр: «"+x.code+"»",true);return false;}
+        if(seen[x.code]){toast("Рамз такрор шуд · код повторяется: "+x.code,true);return false;}
+        if(!x.name){toast("Номгӯй холӣ · нет названия у кода "+x.code,true);return false;}
+        seen[x.code]=x;
+      }
+      for(i=0;i<list.length;i++){
+        var p=list[i].parent;
+        if(!p)continue;
+        if(!seen[p]){toast("Гурӯҳ ёфт нашуд · нет группы "+p,true);return false;}
+        if(seen[p].parent){toast("Танҳо як сатҳ · группа "+p+" сама входит в группу",true);return false;}
+      }
+      // удалённые статьи, которые уже в работе
+      var gone=BUDGET_CODES.filter(function(c){return !seen[c.code]&&codeInUse(c.code);});
+      if(gone.length){
+        toast("Рамзи "+gone[0].code+" истифода мешавад · статья в работе, удалить нельзя",true);
+        return false;
+      }
+      // подстатьи сразу за своей группой — так их и видно в бюджете
+      var top=list.filter(function(x){return !x.parent;});
+      top.sort(function(a,b){return Number(a.code)-Number(b.code);});
+      var ordered=[];
+      top.forEach(function(t){
+        ordered.push(t);
+        list.filter(function(x){return x.parent===t.code;})
+          .sort(function(a,b){return Number(a.code)-Number(b.code);})
+          .forEach(function(k){ordered.push(k);});
+      });
+      send("saveCodes",{codes:ordered.map(function(x){
+        return {code:x.code,name:x.name,ru:x.ru,parent:x.parent};
+      })},"Моддаҳо сабт шуданд · статьи сохранены");
+    }
+  });
+}
+
 function editBudget(){
   if(S.comp==="all"){
     toast("Аввал ташкилотро интихоб кунед · сначала выберите организацию",true);
@@ -1362,9 +1521,12 @@ function editBudget(){
   modal({
     title:"Нақшаи буҷет · план на "+S.bYear+" — "+S.comp,
     wide:true,
-    body:h+'<p class="hint">Суммы в сомони. Пустая клетка — ноль. Иҷроиш считается от заявок и здесь не вводится.</p>',
+    body:h+'<p class="hint">Суммы в сомони. Пустая клетка — ноль. Иҷроиш считается от заявок и здесь не вводится. '+
+      'Нужна новая статья или другое название — <a href="#" id="toCodes">Моддаҳо · статьи</a>.</p>',
     okText:"Нигоҳ доштан",
-    onOpen:function(root){
+    onOpen:function(root,close){
+      var tc=root.querySelector("#toCodes");
+      if(tc)tc.onclick=function(e){e.preventDefault();close();setTimeout(editCodes,0);};
       var recalc=function(){
         var trs=root.querySelectorAll("tr[data-code]");
         for(var i=0;i<trs.length;i++){
@@ -1612,6 +1774,7 @@ function wire(){
   els=view.querySelectorAll("[data-act]");
   for(i=0;i<els.length;i++)(function(b){b.onclick=function(){act(b.dataset.act,b.dataset.id,b);};})(els[i]);
   var be=document.getElementById("bEdit"); if(be)be.onclick=editBudget;
+  var bc=document.getElementById("bCodes"); if(bc)bc.onclick=editCodes;
   var lw=document.getElementById("logWho");
   if(lw)lw.onchange=function(){S.logWho=lw.value;render();};
   var nd=document.getElementById("newDoc"); if(nd)nd.onclick=function(){addDoc(null);};
