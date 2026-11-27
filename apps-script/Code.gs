@@ -27,7 +27,7 @@ var COLS = {
   contracts: ['id','no','date','supplier','country','object','product','currency','rate','bank','invoice','gtd','file',
               'reqAmount','reqTjs','allocAmount','allocTjs','req2Rate','req2Amount','req2Tjs',
               'alloc2Rate','alloc2Amount','alloc2Tjs','allocTotal',
-              'plan1Cond','plan1Sum','plan2Cond','plan2Sum','plan3Cond','plan3Sum','code','protocolId','ceh'],
+              'plan1Cond','plan1Sum','plan2Cond','plan2Sum','plan3Cond','plan3Sum','code','protocolId','ceh','schedule'],
   payments:  ['id','contractId','amount','date','rate','tjs','note','requestId'],
   requests:  ['id','number','date','company','contractId','currency','rate','purpose','purposeShort','submittedAt','paidAt','createdAt','code','tranche','ceh'],
   items:     ['id','requestId','name','unit','qty','price'],
@@ -86,6 +86,8 @@ function doPost(e) {
       case 'saveBudget':    out = saveBudget(p); break;
       case 'saveCodes':     out = saveCodes(p); break;
       case 'saveCehs':      out = saveCehs(p); break;
+      case 'addPayment':    out = addPayment(p); break;
+      case 'deletePayment': out = deletePayment(p); break;
       case 'saveProtocol':  out = saveProtocol(p); break;
       case 'deleteProtocol':out = deleteProtocol(p); break;
       case 'uploadDoc':     out = uploadDoc(p); break;
@@ -224,9 +226,12 @@ function bootstrap(withLog) {
      'alloc2Rate','alloc2Amount','alloc2Tjs','allocTotal'].forEach(function (k) {
       c[k] = Number(c[k]) || 0;
     });
-    c.plan = [1, 2, 3].map(function (i) {
+    var sched = null;
+    try { sched = c.schedule ? JSON.parse(c.schedule) : null; } catch (e) { sched = null; }
+    c.plan = (sched && sched.length ? sched : [1, 2, 3].map(function (i) {
       return {cond: c['plan' + i + 'Cond'] || '', amount: Number(c['plan' + i + 'Sum']) || 0};
-    }).filter(function (x) { return x.cond || x.amount; });
+    })).filter(function (x) { return x.cond || Number(x.amount); });
+    delete c.schedule;
     c.payments = payments.filter(function (p) { return String(p.contractId) === String(c.id); })
       .map(function (p) {
         return {id: p.id, amount: Number(p.amount) || 0, date: p.date, rate: Number(p.rate) || 0,
@@ -363,6 +368,16 @@ function describeAction(action, p) {
         (p.rows || []).forEach(function (b) { for (var m = 1; m <= 12; m++) sum += Number(b['m' + m]) || 0; });
         return {object: 'Буҷет ' + (p.year || '') + ' · ' + (p.company || '') + (p.ceh ? ' · ' + p.ceh : ''),
                 details: 'нақша: ' + sum};
+      case 'addPayment':
+        c = readAll('contracts').filter(function (k) { return String(k.id) === String(p.contractId); })[0] || {};
+        r = p.requestId ? (findRequest(p.requestId) || {}) : {};
+        return {object: 'Шартнома № ' + (c.no || p.contractId),
+                details: (p.amount || '') + ' ' + (c.currency || '') + ' · ' + (p.date || '') +
+                         (r.number ? ' · дархост № ' + r.number : '')};
+      case 'deletePayment':
+        x = readAll('payments').filter(function (k) { return String(k.id) === String(p.paymentId); })[0] || {};
+        c = readAll('contracts').filter(function (k) { return String(k.id) === String(x.contractId); })[0] || {};
+        return {object: 'Шартнома № ' + (c.no || ''), details: (x.amount || '') + ' · ' + (x.date || '')};
       case 'saveCehs':
         return {object: 'Сехҳо · цеха', details: 'сехҳо: ' + ((p.cehs || []).length)};
       case 'saveCodes':
@@ -695,6 +710,9 @@ function contractRow(c) {
     allocTotal: n(c.allocTotal), code: c.code || '', protocolId: c.protocolId || '', ceh: c.ceh || ''
   };
   var plan = c.plan || [];
+  row.schedule = plan.length ? JSON.stringify(plan.map(function (x) {
+    return {cond: String(x.cond || ''), amount: n(x.amount)};
+  })) : '';
   for (var i = 0; i < 3; i++) {
     row['plan' + (i + 1) + 'Cond'] = plan[i] ? (plan[i].cond || '') : '';
     row['plan' + (i + 1) + 'Sum'] = plan[i] ? n(plan[i].amount) : '';
@@ -812,6 +830,38 @@ function decide(p) {
     at: new Date().toISOString(), byName: s.name || '', comment: String(p.comment || '').trim()
   });
   return {roleKey: p.roleKey, decision: p.decision};
+}
+
+/**
+ * Платёж по контракту с карточки контракта. Привязка к заявке необязательна,
+ * но только привязанный платёж попадает в иҷроиш бюджета.
+ */
+function addPayment(p) {
+  auth(p);
+  var c = readAll('contracts').filter(function (k) { return String(k.id) === String(p.contractId); })[0];
+  if (!c) throw new Error('Шартнома ёфт нашуд · контракт не найден');
+  var amount = Number(p.amount) || 0, rate = Number(p.rate) || 0;
+  if (amount <= 0) throw new Error('Маблағ нодуруст · неверная сумма');
+  if (rate <= 0) throw new Error('Курс нодуруст · неверный курс');
+  if (!p.date) throw new Error('Сана нишон дода нашуд · не указана дата');
+  var reqId = String(p.requestId || '');
+  if (reqId) {
+    var r = findRequest(reqId);
+    if (!r || String(r.contractId) !== String(c.id)) throw new Error('Дархост ба ин шартнома тааллуқ надорад');
+  }
+  var o = {id: uid('p'), contractId: c.id, amount: amount, date: p.date, rate: rate,
+           tjs: amount * rate, note: p.note || '', requestId: reqId};
+  upsert('payments', o);
+  return {id: o.id};
+}
+
+function deletePayment(p) {
+  auth(p);
+  var id = String(p.paymentId || '');
+  var row = rowIndexById('payments', id);
+  if (row < 0) throw new Error('Пардохт ёфт нашуд · платёж не найден');
+  sheet('payments').deleteRow(row);
+  return {deleted: id};
 }
 
 function markPaid(p) {

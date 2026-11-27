@@ -990,6 +990,112 @@ function newTrancheRequest(c,n){
             unit:c.currency||"", qty:1, price:tr.amount}]
   });
 }
+
+/* ── «+ Транш» прямо из карточки контракта ── */
+function addTranche(c){
+  if(!c)return;
+  var tr=tranches(c);
+  var planned=tr.reduce(function(s,x){return s+x.amount;},0);
+  var rest=Math.max(0,(Number(c.invoice)||0)-planned);
+  modal({
+    title:"Транши нав · шартнома № "+c.no,
+    body:'<div class="fgrid"><div><label class="f">Шарт · условие / сана</label>'+
+      '<input id="tCond" placeholder="Пас аз боркашонӣ / 15.12.2026"></div>'+
+      '<div><label class="f">Маблағ, '+esc(c.currency||"")+'</label>'+
+      '<input id="tSum" class="num" inputmode="decimal" value="'+(rest?Math.round(rest*100)/100:"")+'"></div></div>'+
+      '<p class="hint">Это будет транш № '+(tr.length+1)+'. По графику уже '+nf(planned,2)+" из "+
+      nf(c.invoice,2)+" "+esc(c.currency||"")+(rest?", не распределено "+nf(rest,2):"")+".</p>",
+    okText:"Илова кардан",
+    onOpen:function(root){root.querySelector("#tCond").focus();},
+    onOk:function(root){
+      var cond=root.querySelector("#tCond").value.trim();
+      var sum=Number(String(root.querySelector("#tSum").value).replace(/\s/g,"").replace(",","."))||0;
+      if(!cond&&!sum){toast("Шарт ё маблағро нависед · укажите условие или сумму",true);return false;}
+      var d=JSON.parse(JSON.stringify(c));
+      d.plan=(c.plan||[]).concat([{cond:cond,amount:sum}]);
+      delete d.payments;
+      if(OFFLINE){c.plan=d.plan;localSave();render();toast("Транш илова шуд");return;}
+      send("saveContract",{contract:d},"Транш илова шуд · транш добавлен");
+    }
+  });
+}
+
+/* ── «+ Пардохт»: платёж по контракту, привязанный к заявке ──
+ * Иҷроиш бюджета считается по заявкам, поэтому платёж по возможности
+ * привязывается к заявке; без неё он виден в контракте, но не в бюджете. */
+function addPayment(c){
+  if(!c)return;
+  var reqs=S.requests.filter(function(r){return r.contractId===c.id;});
+  var tr=tranches(c);
+  var today=new Date().toISOString().slice(0,10);
+  var bal=Math.max(0,(Number(c.invoice)||0)-(c.payments||[]).reduce(function(s,p){return s+(Number(p.amount)||0);},0));
+  modal({
+    title:"Пардохт · шартнома № "+c.no,
+    body:'<div class="fgrid">'+
+      '<div><label class="f">Сана · дата</label><input id="pyDate" type="date" value="'+today+'"></div>'+
+      '<div><label class="f">Маблағ, '+esc(c.currency||"")+'</label>'+
+      '<input id="pyAmt" class="num" inputmode="decimal" value="'+(bal?Math.round(bal*100)/100:"")+'"></div>'+
+      '<div><label class="f">Курс · сомонӣ за 1 '+esc(c.currency||"")+'</label>'+
+      '<input id="pyRate" class="num" inputmode="decimal" value="'+(Number(c.rate)||"")+'"></div></div>'+
+      '<div><label class="f">Дархост · заявка</label><select id="pyReq">'+
+      '<option value="">— бе дархост · без заявки —</option>'+reqs.map(function(r){
+        return '<option value="'+esc(r.id)+'"'+(reqs.length===1?" selected":"")+">№ "+esc(r.number)+
+          (r.tranche?" · транш "+esc(r.tranche):"")+" · "+dRu(r.date)+"</option>";
+      }).join("")+"</select></div>"+
+      '<div><label class="f">Эзоҳ · примечание</label><input id="pyNote" placeholder="Пардохти '+
+      ((c.payments||[]).length+1)+'-ум'+(tr.length?" / транш":"")+'"></div>'+
+      '<p class="hint" id="pyHint"></p>',
+    okText:"Сабт кардан",
+    onOpen:function(root){
+      var h=root.querySelector("#pyHint"),sel=root.querySelector("#pyReq");
+      var amt=root.querySelector("#pyAmt"),rate=root.querySelector("#pyRate");
+      function upd(){
+        var a=Number(String(amt.value).replace(/\s/g,"").replace(",","."))||0;
+        var k=Number(String(rate.value).replace(",","."))||0;
+        h.innerHTML=(a&&k?"В сомони: <b>"+nf(a*k,2)+"</b>. ":"")+
+          (sel.value?"Платёж войдёт в иҷроиш бюджета по статье и цеху заявки."
+            :'<span style="color:var(--wait)">Без заявки платёж будет виден в контракте, но в бюджет не попадёт.</span>');
+      }
+      [sel,amt,rate].forEach(function(x){x.oninput=upd;x.onchange=upd;});
+      upd();
+    },
+    onOk:function(root){
+      var a=Number(String(root.querySelector("#pyAmt").value).replace(/\s/g,"").replace(",","."))||0;
+      var k=Number(String(root.querySelector("#pyRate").value).replace(",","."))||0;
+      var dt=root.querySelector("#pyDate").value;
+      if(a<=0){toast("Маблағ нодуруст · неверная сумма",true);return false;}
+      if(!k){toast("Курсро нависед · укажите курс",true);return false;}
+      if(!dt){toast("Санаро нависед · укажите дату",true);return false;}
+      var note=root.querySelector("#pyNote").value.trim()||("Пардохти "+((c.payments||[]).length+1)+"-ум");
+      var pay={contractId:c.id,amount:a,rate:k,date:dt,note:note,requestId:root.querySelector("#pyReq").value};
+      if(OFFLINE){
+        c.payments=(c.payments||[]).concat([{id:"p"+Date.now().toString(36),amount:a,rate:k,tjs:a*k,
+          date:dt,note:note,requestId:pay.requestId}]);
+        localSave();render();toast("Пардохт сабт шуд");return;
+      }
+      send("addPayment",pay,"Пардохт сабт шуд · платёж записан");
+    }
+  });
+}
+
+function delPayment(c,payId){
+  if(!c)return;
+  var p=(c.payments||[]).filter(function(x){return x.id===payId;})[0];
+  if(!p)return;
+  modal({
+    title:"Нест кардани пардохт",
+    danger:true,
+    body:"<p>"+esc(p.note||"Пардохт")+" · "+dRu(p.date)+" · <b>"+nf(p.amount,2)+" "+esc(c.currency||"")+
+      "</b> аз шартномаи № "+esc(c.no)+" нест карда мешавад.</p>"+
+      '<p class="hint">Сумма уйдёт и из оплаченного по контракту, и из иҷроиш бюджета.</p>',
+    okText:"Нест кардан",
+    onOk:function(){
+      if(OFFLINE){c.payments=c.payments.filter(function(x){return x.id!==payId;});localSave();render();return;}
+      send("deletePayment",{paymentId:payId},"Пардохт нест карда шуд");
+    }
+  });
+}
+
 function trancheLabel(c,n){
   var tr=tranches(c);
   for(var i=0;i<tr.length;i++)if(tr[i].n===Number(n))
@@ -1805,7 +1911,9 @@ function conDoc(c){
     })()+
     (function(){
       var tr=tranches(c);
-      if(!tr.length)return "";
+      if(!tr.length)return "<section><h3>Графики пардохт · транши</h3>"+
+        '<p class="hint">График не задан.</p>'+
+        '<button class="btn sm" data-act="addtr" data-id="'+esc(c.id)+'">+ Транш</button></section>';
       var ps=tr.reduce(function(s,x){return s+x.amount;},0);
       return "<section><h3>Графики пардохт · транши</h3>"+
         '<table class="grid trgrid"><thead><tr><th>Транш</th><th>Шарт · условие</th>'+
@@ -1816,23 +1924,27 @@ function conDoc(c){
             return s+reqPayments(r).reduce(function(a,p){return a+p.tjs;},0);},0);
           return "<tr><td class=mono>"+x.n+"</td><td>"+esc(x.cond||"—")+"</td>"+
             '<td class="r">'+nf(x.amount,2)+" "+esc(c.currency||"")+"</td>"+
-            "<td>"+(rs.length?rs.map(function(r){
+            "<td>"+rs.map(function(r){
               return '<a href="#" class="trlink" data-req="'+esc(r.id)+'">№ '+esc(r.number)+"</a>";
-            }).join(", "):'<button class="btn sm" data-act="trreq" data-id="'+esc(c.id)+
-              '" data-n="'+x.n+'">+ Дархост</button>')+"</td>"+
+            }).join(", ")+(rs.length?" ":"")+
+            '<button class="btn sm" data-act="trreq" data-id="'+esc(c.id)+'" data-n="'+x.n+
+              '" title="Дархости нав барои ин транш">+ Дархост</button></td>'+
             '<td class="r">'+(paid?nf(paid,2)+" сомонӣ":"—")+"</td></tr>";
         }).join("")+"</tbody></table>"+
         '<p class="hint" style="margin-top:9px">По графику: <b class="num">'+nf(ps,0)+"</b> "+esc(c.currency||"")+
         " · по инвойсу: <b class=\"num\">"+nf(c.invoice,0)+"</b>"+
         (Math.abs(ps-(Number(c.invoice)||0))>0.5?' · <span style="color:var(--wait)">расхождение '+
-          nf((Number(c.invoice)||0)-ps,0)+"</span>":"")+"</p></section>";
+          nf((Number(c.invoice)||0)-ps,0)+"</span>":"")+"</p>"+
+        '<button class="btn sm" data-act="addtr" data-id="'+esc(c.id)+'">+ Транш</button></section>';
     })()+
     "<section><h3>Пардохтҳо · платежи</h3>"+
     '<div class="paylist">'+((c.payments||[]).map(function(p,i){
       return '<div class="pay"><span class="n">'+(i+1)+"</span><span>"+esc(p.note||"Пардохт")+
         (p.date?' · <span class="num" style="font-size:12px;color:var(--ink-faint)">'+dRu(p.date)+"</span>":"")+
         (p.tjs?'<br><span class="num" style="font-size:12px;color:var(--ink-faint)">'+nf(p.tjs,2)+" сомонӣ</span>":"")+
-        '</span><span class="a">'+nf(p.amount,2)+" "+esc(c.currency||"")+"</span></div>";
+        '</span><span class="a">'+nf(p.amount,2)+" "+esc(c.currency||"")+"</span>"+
+        (p.id?'<button class="x" data-act="delpay" data-id="'+esc(c.id)+'" data-pay="'+esc(p.id)+
+          '" title="Пардохтро нест кардан">×</button>':"")+"</div>";
     }).join("")||'<p class="hint">Пардохт сабт нашудааст · платежей нет</p>')+"</div>"+
     '<dl class="kv" style="margin-top:16px"><div><dt>Пардохтшуда</dt><dd class="num">'+money(pd,c.currency)+"</dd></div>"+
     '<div><dt>Бақия барои пардохт</dt><dd class="num" style="color:'+(bal>0.0001?"var(--wait)":"var(--ok)")+'">'+
@@ -1846,7 +1958,9 @@ function conDoc(c){
         STATUS[st].cls+'">'+STATUS[st].short+"</span> · "+dRu(r.date)+'</span><span class="a">'+
         nf(reqTotalCur(r),2)+" "+esc(r.currency||"")+"</span></div>";
     }).join("")+"</div>":'<p class="hint">Дархост нест</p>')+
-    '<div class="acts" style="margin-top:14px"><button class="btn sm" data-act="editcon" data-id="'+esc(c.id)+'">Таҳрир</button>'+
+    '<div class="acts" style="margin-top:14px">'+
+    '<button class="btn sm pri" data-act="addpay" data-id="'+esc(c.id)+'">+ Пардохт</button>'+
+    '<button class="btn sm" data-act="editcon" data-id="'+esc(c.id)+'">Таҳрир</button>'+
     '<button class="btn sm dang" data-act="delcon" data-id="'+esc(c.id)+'">Нест кардан</button></div>'+
     "</section></div>";
 }
@@ -1959,6 +2073,9 @@ function act(a,id,btn){
   if(a==="editcon"){editContract(findCon(id));return;}
   if(a==="delreq"){delRequest(r);return;}
   if(a==="trreq"){newTrancheRequest(findCon(id),Number(btn.dataset.n));return;}
+  if(a==="addtr"){addTranche(findCon(id));return;}
+  if(a==="addpay"){addPayment(findCon(id));return;}
+  if(a==="delpay"){delPayment(findCon(id),btn.dataset.pay);return;}
   if(a==="adddoc"){addDoc(r);return;}
   if(a==="deldoc"){delDoc(id);return;}
   if(a==="delcon"){delContract(findCon(id));return;}
@@ -2224,7 +2341,7 @@ function editContract(c){
     no:"",date:new Date().toISOString().slice(0,10),supplier:"",country:"",object:"Мармарӣ",
     product:"",currency:"EUR",rate:10.81,bank:"",invoice:0,gtd:"",file:"",payments:[]
   };
-  var pl=(d.plan||[]).concat([{},{},{}]).slice(0,3);
+  var pl=(d.plan&&d.plan.length?d.plan:[{},{},{}]).slice();
   var num=function(id,label,val,hint){
     return '<div><label class="f">'+label+'</label><input id="'+id+'" class="num" inputmode="decimal" value="'+
       esc(val===0||val?val:"")+'">'+(hint?'<span class="fh">'+hint+"</span>":"")+"</div>";
@@ -2256,16 +2373,13 @@ function editContract(c){
 
       '<fieldset class="grp"><legend>Графики пардохт</legend>'+
       '<div class="splitbar"><span>Маблағи шартномаро ба</span>'+
-      '<select id="cSplitN"><option>1</option><option>2</option><option selected>3</option></select>'+
+      '<select id="cSplitN">'+[1,2,3,4,5,6,8,10,12].map(function(n){
+        return "<option"+(n===3?" selected":"")+">"+n+"</option>";}).join("")+"</select>"+
       '<span>транш</span>'+
       '<input id="cSplitP" placeholder="30/60/10" title="доли в процентах; пусто — поровну">'+
       '<button class="btn sm" type="button" id="cSplit">Ҷудо кардан · разбить</button></div>'+
-      pl.map(function(x,i){
-        return '<div class="fgrid" style="grid-template-columns:minmax(140px,2fr) minmax(90px,1fr)">'+
-          '<div><label class="f">Транш '+(i+1)+' — шарт/сана</label><input id="cP'+i+'c" value="'+
-          esc(x.cond||"")+'" placeholder="до 01.10.2026 / по готовности"></div>'+
-          num("cP"+i+"s","Сумма",x.amount)+"</div>";
-      }).join("")+
+      '<div id="trList"></div>'+
+      '<button class="btn sm" type="button" id="cTrAdd">+ Транш</button>'+
       '<p class="hint" id="planHint"></p></fieldset>'+
 
       '<fieldset class="grp"><legend>Иловагӣ</legend><div class="fgrid">'+
@@ -2288,8 +2402,8 @@ function editContract(c){
     onOpen:function(root){
       function recalc(){
         var inv=Number(root.querySelector("#cInv").value)||0;
-        var s=0;
-        for(var i=0;i<3;i++)s+=Number(root.querySelector("#cP"+i+"s").value)||0;
+        var s=0,ins=root.querySelectorAll("#trList .ts");
+        for(var i=0;i<ins.length;i++)s+=Number(ins[i].value)||0;
         var h=root.querySelector("#planHint");
         if(!s){h.textContent="График не задан — остаток считается от фактических оплат.";h.style.color="";return;}
         var diff=inv-s;
@@ -2307,29 +2421,50 @@ function editContract(c){
         var parts=raw?raw.split(/[^0-9.,]+/).filter(Boolean).map(function(x){
           return Number(String(x).replace(",","."))||0;}):[];
         if(parts.length){
-          n=Math.min(parts.length,3);
-          parts=parts.slice(0,n);
+          n=parts.length;
           var ps=parts.reduce(function(a,b){return a+b;},0);
           if(Math.abs(ps-100)>0.01){toast("Ҳиссаҳо бояд 100% шаванд · доли должны давать 100 %",true);return;}
         }else{
           parts=[];for(var k=0;k<n;k++)parts.push(100/n);
         }
-        var used=0;
-        for(var i=0;i<3;i++){
-          var sum="",cond=root.querySelector("#cP"+i+"c");
-          if(i<n){
-            sum=(i===n-1)?Math.round((inv-used)*100)/100:Math.round(inv*parts[i])/100;
-            used+=Number(sum);
-            if(!cond.value.trim())cond.value=nf(parts[i],parts[i]%1?1:0)+" %";
-          }else{cond.value="";}
-          root.querySelector("#cP"+i+"s").value=sum;
+        var old=readTr(),used=0;
+        pl=[];
+        for(var i=0;i<n;i++){
+          var sum=(i===n-1)?Math.round((inv-used)*100)/100:Math.round(inv*parts[i])/100;
+          used+=sum;
+          pl.push({cond:(old[i]&&old[i].cond)||(nf(parts[i],parts[i]%1?1:0)+" %"),amount:sum});
         }
-        recalc();
+        drawTr();
       };
-      ["cInv","cP0s","cP1s","cP2s"].forEach(function(id){
-        root.querySelector("#"+id).oninput=recalc;
-      });
-      recalc();
+      /* Транши — список любой длины: «+ Транш» добавляет строку, × убирает. */
+      function readTr(){
+        var out=[],rs=root.querySelectorAll("#trList .trrow");
+        for(var i=0;i<rs.length;i++)out.push({cond:rs[i].querySelector(".tc").value.trim(),
+          amount:Number(rs[i].querySelector(".ts").value)||0});
+        return out;
+      }
+      function drawTr(){
+        root.querySelector("#trList").innerHTML=pl.map(function(x,i){
+          return '<div class="trrow"><span class="trn">'+(i+1)+'</span>'+
+            '<input class="tc" value="'+esc(x.cond||"")+'" placeholder="Транш '+(i+1)+' — шарт / сана">'+
+            '<input class="ts num" inputmode="decimal" value="'+esc(x.amount||x.amount===0&&x.cond?x.amount:"")+
+            '" placeholder="Маблағ">'+
+            '<button class="x" type="button" data-trdel="'+i+'" title="Траншро нест кардан">×</button></div>';
+        }).join("");
+        var ds=root.querySelectorAll("[data-trdel]");
+        for(var k=0;k<ds.length;k++)(function(b){
+          b.onclick=function(){pl=readTr();pl.splice(Number(b.dataset.trdel),1);drawTr();};
+        })(ds[k]);
+        var ts=root.querySelectorAll("#trList .ts");
+        for(var j=0;j<ts.length;j++)ts[j].oninput=recalc;
+        recalc();
+      }
+      root.querySelector("#cTrAdd").onclick=function(){
+        pl=readTr();pl.push({});drawTr();
+        var cs=root.querySelectorAll("#trList .tc");cs[cs.length-1].focus();
+      };
+      root.querySelector("#cInv").oninput=recalc;
+      drawTr();
     },
     onOk:function(root){
       d.no=root.querySelector("#cNo").value.trim();
@@ -2352,9 +2487,12 @@ function editContract(c){
       d.req2Rate=g("cR2R");  d.req2Amount=g("cR2A");
       d.alloc2Rate=g("cA2R"); d.alloc2Amount=g("cA2A");
       d.allocTotal=g("cAllT");
-      d.plan=[0,1,2].map(function(i){
-        return {cond:root.querySelector("#cP"+i+"c").value.trim(), amount:g("cP"+i+"s")};
-      }).filter(function(x){return x.cond||x.amount;});
+      d.plan=[];
+      var trs=root.querySelectorAll("#trList .trrow");
+      for(var ti=0;ti<trs.length;ti++){
+        var tx={cond:trs[ti].querySelector(".tc").value.trim(),amount:Number(trs[ti].querySelector(".ts").value)||0};
+        if(tx.cond||tx.amount)d.plan.push(tx);
+      }
       if(!d.no){toast("Рақами шартномаро нависед",true);return false;}
       if(!d.supplier){toast("Интиқолдиҳандаро нависед · укажите поставщика",true);return false;}
       if(!(Number(d.invoice)||0)){toast("Маблағи ИНВОЙС холӣ · укажите сумму инвойса",true);return false;}
