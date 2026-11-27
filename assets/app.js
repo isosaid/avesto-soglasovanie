@@ -121,6 +121,24 @@ function codeName(code){
   return "";
 }
 
+/* ─── цеха (подразделения) — из реестра «Мархилаи-2», графа «Цех (Подразделение)» ─── */
+var DEFAULT_CEHS = [
+  "Выращивание бройлеров — 12 птичников",
+  "Ремонтный молодняк родительского стада",
+  "Родительское стадо",
+  "Убойный цех",
+  "Инкубаторий",
+  "Комбикормовый завод"
+];
+var CEHS = DEFAULT_CEHS.slice();
+function cehOptions(cur,emptyLabel){
+  var v=String(cur||"");
+  var list=CEHS.slice();
+  if(v&&list.indexOf(v)<0)list.unshift(v);   // старое значение не теряем
+  return '<option value="">'+esc(emptyLabel||"— бе сех · без цеха —")+"</option>"+
+    list.map(function(c){return '<option value="'+esc(c)+'"'+(c===v?" selected":"")+">"+esc(c)+"</option>";}).join("");
+}
+
 /* ─── маршрут по умолчанию (пока справочник не пришёл с сервера) ─── */
 var DEFAULT_SIGNERS = [
   {key:"branch",    posTj:"Муовини директори генералӣ оид ба самти паррандапарварӣ ҶДММ «Мармарӣ»", posRu:"Зам. ген. директора по птицеводству", name:"Ҳакимов З.", order:1},
@@ -261,6 +279,7 @@ var S={
   tab:"budget", filter:"all",
   contracts:[], requests:[], budget:[], protocols:[], signers:DEFAULT_SIGNERS.slice(),
   bYear:new Date().getFullYear(),
+  ceh:"all",
   selReq:null, selCon:null, sheetFor:null,
   q:"", cur:"all", rest:"all", comp:"all", conMode:"cards",
   session:null, me:null, busy:false, loaded:false, error:null, gateErr:null
@@ -294,12 +313,13 @@ function localLoad(){
   try{
     var raw=lsGet("avesto.soglasovanie.data");
     if(raw){var d=JSON.parse(raw);S.contracts=d.contracts||[];S.requests=d.requests||[];S.budget=d.budget||[];
-      if(d.codes&&d.codes.length)BUDGET_CODES=normCodes(d.codes);}
+      if(d.codes&&d.codes.length)BUDGET_CODES=normCodes(d.codes);
+      if(d.cehs&&d.cehs.length)CEHS=d.cehs;}
   }catch(e){}
 }
 function localSave(){
   try{lsSet("avesto.soglasovanie.data",
-    JSON.stringify({contracts:S.contracts,requests:S.requests,budget:S.budget,codes:BUDGET_CODES}));}catch(e){}
+    JSON.stringify({contracts:S.contracts,requests:S.requests,budget:S.budget,codes:BUDGET_CODES,cehs:CEHS}));}catch(e){}
 }
 
 function applyState(d){
@@ -308,6 +328,7 @@ function applyState(d){
   S.budget=d.budget||[];
   S.protocols=d.protocols||[];
   if(d.codes&&d.codes.length)BUDGET_CODES=normCodes(d.codes);
+  if(d.cehs&&d.cehs.length)CEHS=d.cehs.map(function(c){return String(c.name||c);}).filter(Boolean);
   if(d.log)S.log=d.log;            // журнал приходит только администратору и только в ответ на POST
   if(d.signers&&d.signers.length)S.signers=d.signers;
   S.loaded=true; S.error=null;
@@ -364,6 +385,8 @@ function localDo(action,payload,okMsg){
   }else if(action==="deleteRequest"){
     S.requests=S.requests.filter(function(x){return x.id!==payload.requestId;});
     if(S.selReq===payload.requestId)S.selReq=null;
+  }else if(action==="saveCehs"){
+    CEHS=(payload.cehs||[]).slice();
   }else if(action==="saveCodes"){
     BUDGET_CODES=normCodes(payload.codes||[]);
   }else if(action==="deleteContract"){
@@ -602,6 +625,7 @@ function reqDoc(r){
       '<div class="hint" style="margin-top:12px">Шартнома пайваст нашуд · контракт не привязан</div>')+
     '<dl class="kv" style="margin-top:14px">'+
     (r.tranche&&c?"<div><dt>Транш</dt><dd>"+esc(trancheLabel(c,r.tranche))+"</dd></div>":"")+
+    (effCeh(r)?"<div><dt>Сех</dt><dd>"+esc(effCeh(r))+"</dd></div>":"")+
     '<div><dt>Рамзи буҷет</dt><dd>'+
     (r.code?'<span class="mono">'+esc(r.code)+"</span> · "+esc(codeName(r.code))
           :'<span style="color:var(--no)">нишон дода нашуд · код не указан</span>')+"</dd></div></dl>"+
@@ -730,6 +754,14 @@ function conMatches(c){
  * Фарқият = нақша − иҷроиш.
  */
 function inScope(company){ return S.comp==="all"||sameCompany(company,S.comp); }
+/* Цех заявки: свой, а если не указан — контракта. Фильтр цеха на бюджете
+   сравнивает с ним. */
+function effCeh(r){
+  if(r.ceh)return String(r.ceh);
+  var c=findCon(r.contractId);
+  return c&&c.ceh?String(c.ceh):"";
+}
+function inCeh(r){ return S.ceh==="all"||effCeh(r)===S.ceh; }
 /* Код заявки: свой, а если не проставлен — берётся у контракта.
    Так статья бюджета задаётся один раз на контракт и работает для всех
    заявок по нему. */
@@ -746,6 +778,7 @@ function planOf(code,m){
     if(String(b.code)!==String(code))return;
     if(Number(b.year)!==Number(S.bYear))return;
     if(!inScope(b.company))return;
+    if(S.ceh!=="all"&&String(b.ceh||"")!==S.ceh)return;
     sum+=Number(b["m"+m])||0;
   });
   return sum;
@@ -780,7 +813,7 @@ function factOf(code,m){
   var sum=0;
   S.requests.forEach(function(r){
     if(effCode(r)!==String(code))return;
-    if(!inScope(r.company))return;
+    if(!inScope(r.company)||!inCeh(r))return;
     reqPayments(r).forEach(function(p){
       var t=monthOf(p.date);
       if(!t||t.year!==Number(S.bYear))return;
@@ -795,7 +828,7 @@ function pipelineOf(code){
   var sum=0;
   S.requests.forEach(function(r){
     if(effCode(r)!==String(code))return;
-    if(!inScope(r.company))return;
+    if(!inScope(r.company)||!inCeh(r))return;
     var st=derivedStatus(r);
     if(st!=="review"&&st!=="approved")return;
     var t=monthOf(r.date);
@@ -808,7 +841,7 @@ function codesNoCode(){
   var sum=0;
   S.requests.forEach(function(r){
     if(effCode(r)!=="")return;
-    if(!inScope(r.company))return;
+    if(!inScope(r.company)||!inCeh(r))return;
     sum+=reqTotalTjs(r);
   });
   return sum;
@@ -819,12 +852,12 @@ function codesNoCode(){
 function codeContracts(code){
   var out=[],seen={};
   S.contracts.forEach(function(c){
-    if(String(c.code||"")===String(code))
+    if(String(c.code||"")===String(code)&&(S.ceh==="all"||String(c.ceh||"")===S.ceh))
       {out.push(c);seen[c.id]=1;}
   });
   // контракт без кода попадает сюда, если по нему есть заявка с этим кодом
   S.requests.forEach(function(r){
-    if(effCode(r)!==String(code)||!inScope(r.company))return;
+    if(effCode(r)!==String(code)||!inScope(r.company)||!inCeh(r))return;
     var c=findCon(r.contractId);
     if(c&&!seen[c.id]){out.push(c);seen[c.id]=1;}
   });
@@ -832,14 +865,14 @@ function codeContracts(code){
 }
 function codeRequests(code){
   return S.requests.filter(function(r){
-    return effCode(r)===String(code)&&inScope(r.company);
+    return effCode(r)===String(code)&&inScope(r.company)&&inCeh(r);
   }).sort(function(a,b){return String(a.date||"").localeCompare(String(b.date||""));});
 }
 
 /* Заявки, оставшиеся без статьи: финансовый отдел проставляет их здесь —
    заявителю код знать не обязательно. */
 function fixCodes(){
-  var list=S.requests.filter(function(r){return effCode(r)===""&&inScope(r.company);});
+  var list=S.requests.filter(function(r){return effCode(r)===""&&inScope(r.company)&&inCeh(r);});
   if(!list.length){toast("Ҳама дархостҳо рамз доранд · все заявки с кодом");return;}
   var opts=BUDGET_CODES.map(function(c){
     return '<option value="'+c.code+'">'+c.code+" — "+esc(c.name)+"</option>";
@@ -1288,14 +1321,19 @@ function renderBudget(){
   var mode=S.bMode==="months"?"months":"year";
   var head='<div class="bhead">'+
     '<div><p class="borg">'+esc(S.comp==="all"?"Ҳамаи ташкилотҳо":S.comp)+"</p>"+
-    "<h2>Маълумот оиди рафти иҷрои буҷет дар соли "+esc(String(S.bYear))+"</h2></div>"+
+    "<h2>Маълумот оиди рафти иҷрои буҷет дар соли "+esc(String(S.bYear))+"</h2>"+
+    (S.ceh!=="all"?'<p class="bceh">'+esc(S.ceh)+"</p>":"")+"</div>"+
     '<div class="btools">'+
+    '<select id="bCeh" title="Сех · цех">'+
+    cehOptions(S.ceh==="all"?"":S.ceh,"Ҳама сехҳо · все цеха").replace('<option value="">','<option value="all">')+
+    "</select>"+
     '<select id="bYear">'+ylist.map(function(y){
       return '<option value="'+y+'"'+(y===Number(S.bYear)?" selected":"")+">"+y+"</option>";
     }).join("")+"</select>"+
     '<div class="seg"><button data-bmode="year" aria-pressed="'+(mode==="year")+'">Сол</button>'+
     '<button data-bmode="months" aria-pressed="'+(mode==="months")+'">Моҳҳо</button></div>'+
     '<button class="btn" id="bCodes">Моддаҳо · статьи</button>'+
+    '<button class="btn" id="bCehs">Сехҳо · цеха</button>'+
     '<button class="btn" id="bEdit">Нақшаро таҳрир кардан</button></div></div>';
 
   var body = mode==="year" ? budgetYear(rows,tot) : budgetMonths(rows,tot);
@@ -1511,6 +1549,64 @@ function editCodes(){
   });
 }
 
+
+/* ═══ справочник цехов ═══ */
+function cehInUse(name){
+  if(S.requests.some(function(r){return String(r.ceh||"")===name;}))return "дархост";
+  if(S.contracts.some(function(c){return String(c.ceh||"")===name;}))return "шартнома";
+  if(S.budget.some(function(b){return String(b.ceh||"")===name;}))return "нақша";
+  return "";
+}
+function editCehs(){
+  var rows=CEHS.map(function(n){return {name:n,orig:n};});
+  function table(){
+    return '<table class="grid codegrid"><thead><tr><th>Сех · цех (подразделение)</th><th></th></tr></thead><tbody>'+
+      rows.map(function(x,i){
+        var used=x.orig?cehInUse(x.orig):"";
+        return '<tr data-i="'+i+'"><td><input class="hn" value="'+esc(x.name)+'"'+(used?" readonly":"")+'></td>'+
+          '<td class="r">'+(used?'<span class="hint" title="Цех в работе: '+esc(used)+'">●</span>'
+            :'<button class="x" type="button" data-del="'+i+'">×</button>')+"</td></tr>";
+      }).join("")+"</tbody></table>";
+  }
+  function collect(root){
+    var trs=root.querySelectorAll("tr[data-i]");
+    for(var i=0;i<trs.length;i++)rows[Number(trs[i].dataset.i)].name=trs[i].querySelector(".hn").value.trim();
+  }
+  modal({
+    title:"Сехҳо · цеха (подразделения)",
+    body:'<div class="codebox" id="cehBox">'+table()+"</div>"+
+      '<button class="btn" type="button" id="cehAdd">+ Сехи нав · новый цех</button>'+
+      '<p class="hint">● — цех уже стоит в заявке, контракте или плане: его нельзя удалить или переименовать, '+
+      "иначе суммы потеряют привязку.</p>",
+    okText:"Нигоҳ доштан",
+    onOpen:function(root){
+      var box=root.querySelector("#cehBox");
+      function wire(){
+        var ds=box.querySelectorAll("[data-del]");
+        for(var i=0;i<ds.length;i++)(function(b){
+          b.onclick=function(){collect(root);rows.splice(Number(b.dataset.del),1);box.innerHTML=table();wire();};
+        })(ds[i]);
+      }
+      root.querySelector("#cehAdd").onclick=function(){
+        collect(root);rows.push({name:"",orig:""});box.innerHTML=table();wire();
+        var ins=box.querySelectorAll(".hn");ins[ins.length-1].focus();
+      };
+      wire();
+    },
+    onOk:function(root){
+      collect(root);
+      var seen={},list=[];
+      for(var i=0;i<rows.length;i++){
+        var n=rows[i].name;
+        if(!n)continue;
+        if(seen[n.toLowerCase()]){toast("Сех такрор шуд · цех повторяется: "+n,true);return false;}
+        seen[n.toLowerCase()]=1; list.push(n);
+      }
+      send("saveCehs",{cehs:list},"Сехҳо сабт шуданд · цеха сохранены");
+    }
+  });
+}
+
 function editBudget(){
   if(S.comp==="all"){
     toast("Аввал ташкилотро интихоб кунед · сначала выберите организацию",true);
@@ -1519,6 +1615,7 @@ function editBudget(){
   var cur={};
   S.budget.forEach(function(b){
     if(Number(b.year)!==Number(S.bYear)||!sameCompany(b.company,S.comp))return;
+    if(String(b.ceh||"")!==(S.ceh==="all"?"":S.ceh))return;
     cur[String(b.code)]=b;
   });
   var h='<div class="bedit"><table class="grid"><thead><tr><th>Рамз</th><th>Номгӯй</th>';
@@ -1537,7 +1634,8 @@ function editBudget(){
   h+="</tbody></table></div>";
 
   modal({
-    title:"Нақшаи буҷет · план на "+S.bYear+" — "+S.comp,
+    title:"Нақшаи буҷет · план на "+S.bYear+" — "+S.comp+
+      " · "+(S.ceh==="all"?"умумӣ, бе сех · общий, без цеха":S.ceh),
     wide:true,
     body:h+'<p class="hint">Суммы в сомони. Пустая клетка — ноль. Иҷроиш считается от заявок и здесь не вводится. '+
       'Нужна новая статья или другое название — <a href="#" id="toCodes">Моддаҳо · статьи</a>.</p>',
@@ -1570,7 +1668,8 @@ function editBudget(){
         if(old)o.id=old.id;
         if(any||old)rows.push(o);
       }
-      send("saveBudget",{company:S.comp,year:Number(S.bYear),rows:rows},"Нақша нигоҳ дошта шуд");
+      send("saveBudget",{company:S.comp,year:Number(S.bYear),ceh:S.ceh==="all"?"":S.ceh,rows:rows},
+        "Нақша нигоҳ дошта шуд");
     }
   });
 }
@@ -1793,6 +1892,9 @@ function wire(){
   for(i=0;i<els.length;i++)(function(b){b.onclick=function(){act(b.dataset.act,b.dataset.id,b);};})(els[i]);
   var be=document.getElementById("bEdit"); if(be)be.onclick=editBudget;
   var bc=document.getElementById("bCodes"); if(bc)bc.onclick=editCodes;
+  var bcx=document.getElementById("bCehs"); if(bcx)bcx.onclick=editCehs;
+  var bh=document.getElementById("bCeh");
+  if(bh)bh.onchange=function(){S.ceh=bh.value||"all";lsSet("avesto.ceh",S.ceh);render();};
   var lw=document.getElementById("logWho");
   if(lw)lw.onchange=function(){S.logWho=lw.value;render();};
   var nd=document.getElementById("newDoc"); if(nd)nd.onclick=function(){addDoc(null);};
@@ -1970,6 +2072,7 @@ function editRequest(r,preset){
       '<div><label class="f">Рақам · номер</label><input id="fNum" value="'+esc(d.number)+'" placeholder="01/01"></div>'+
       '<div><label class="f">Сана</label><input id="fDate" type="date" value="'+esc(d.date)+'"></div>'+
       '<div><label class="f">Ташкилот</label><select id="fComp">'+companyOptions(d.company)+"</select></div></div>"+
+      '<div><label class="f">Сех · цех (подразделение)</label><select id="fCeh">'+cehOptions(d.ceh)+"</select></div>"+
       '<div><label class="f">Шартнома</label><select id="fCon"><option value="">— бе шартнома —</option>'+opts+"</select></div>"+
       '<div><label class="f">Транш</label><select id="fTr"></select>'+
       '<p class="hint" id="trHint"></p></div>'+
@@ -2028,6 +2131,11 @@ function editRequest(r,preset){
           : "У контракта нет графика траншей — поле можно оставить пустым.";
       }
       fillTr(true);
+      var selCeh=root.querySelector("#fCeh");
+      selCon.addEventListener("change",function(){
+        var c=findCon(selCon.value);
+        if(c&&c.ceh&&!selCeh.value)selCeh.innerHTML=cehOptions(c.ceh);   // цех подтягивается из контракта
+      });
       selCon.addEventListener("change",function(){ fillTr(false);
         var cc=conCode();
         if(cc&&!selCode.value){selCode.value=cc;showHint(true);return;}
@@ -2069,6 +2177,7 @@ function editRequest(r,preset){
       d.contractId=root.querySelector("#fCon").value;
       d.code=root.querySelector("#fCode").value;
       d.tranche=root.querySelector("#fTr").value;
+      d.ceh=root.querySelector("#fCeh").value;
       d.currency=root.querySelector("#fCur").value.trim();
       d.rate=Number(root.querySelector("#fRate").value)||0;
       d.purpose=root.querySelector("#fPurp").value.trim();
@@ -2157,6 +2266,7 @@ function editContract(c){
       '<p class="hint" id="planHint"></p></fieldset>'+
 
       '<fieldset class="grp"><legend>Иловагӣ</legend><div class="fgrid">'+
+      '<div><label class="f">Сех · цех</label><select id="cCeh">'+cehOptions(d.ceh)+"</select></div>"+
       '<div><label class="f">Протокол</label><select id="cProto">'+
       '<option value="">— бе протокол —</option>'+(S.protocols||[]).map(function(x){
         return '<option value="'+esc(x.id)+'"'+(String(d.protocolId||"")===x.id?" selected":"")+">"+
@@ -2222,6 +2332,7 @@ function editContract(c){
       d.no=root.querySelector("#cNo").value.trim();
       d.code=root.querySelector("#cCode").value;
       d.protocolId=root.querySelector("#cProto").value;
+      d.ceh=root.querySelector("#cCeh").value;
       d.date=root.querySelector("#cDate").value;
       d.supplier=root.querySelector("#cSup").value.trim();
       d.country=root.querySelector("#cCty").value.trim();
@@ -2837,7 +2948,8 @@ function paintThemeBtn(){
 
 S.session=loadSession();
 S.me=S.session?S.session.role.key:null;
-if(S.session)S.comp=lsGet("avesto.lastCompany")||"all";   // организация, выбранная при входе
+if(S.session)S.comp=lsGet("avesto.lastCompany")||"all";
+S.ceh=lsGet("avesto.ceh")||"all";   // организация, выбранная при входе
 var foot=document.getElementById("footText");
 if(foot&&CFG.FOOTER)foot.textContent=CFG.FOOTER;
 render();

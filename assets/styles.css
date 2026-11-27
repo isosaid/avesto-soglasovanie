@@ -409,3 +409,5 @@ table.bgrid td.mono,.bedit td.mono{white-space:nowrap}
   cursor:pointer;font-size:15px;opacity:.55;padding:4px}
 .pwrap .eye:hover{opacity:1}
 .pwwarn{margin:6px 0 0;font-size:12.5px;color:var(--no)}
+#bCeh{max-width:280px}
+.bhead p.bceh{margin:4px 0 0;font-size:13px;font-weight:700;color:var(--accent);text-transform:none;letter-spacing:0}

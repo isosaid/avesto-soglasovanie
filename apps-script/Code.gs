@@ -18,6 +18,7 @@ var SHEETS = {
   budget:    'Буҷет',
   log:       'Журнал',
   codes:     'Моддаҳо',
+  cehs:      'Сехҳо',
   protocols: 'Протоколҳо',
   docs:      'Ҳуҷҷатҳо'
 };
@@ -26,14 +27,16 @@ var COLS = {
   contracts: ['id','no','date','supplier','country','object','product','currency','rate','bank','invoice','gtd','file',
               'reqAmount','reqTjs','allocAmount','allocTjs','req2Rate','req2Amount','req2Tjs',
               'alloc2Rate','alloc2Amount','alloc2Tjs','allocTotal',
-              'plan1Cond','plan1Sum','plan2Cond','plan2Sum','plan3Cond','plan3Sum','code','protocolId'],
+              'plan1Cond','plan1Sum','plan2Cond','plan2Sum','plan3Cond','plan3Sum','code','protocolId','ceh'],
   payments:  ['id','contractId','amount','date','rate','tjs','note','requestId'],
-  requests:  ['id','number','date','company','contractId','currency','rate','purpose','purposeShort','submittedAt','paidAt','createdAt','code','tranche'],
+  requests:  ['id','number','date','company','contractId','currency','rate','purpose','purposeShort','submittedAt','paidAt','createdAt','code','tranche','ceh'],
   items:     ['id','requestId','name','unit','qty','price'],
   approvals: ['id','requestId','roleKey','decision','at','byName','comment'],
   signers:   ['key','posTj','posRu','name','login','password','order','role'],
   // план инвестиционного бюджета: строка на организацию, год и код расхода
-  budget:    ['id','company','year','code','m1','m2','m3','m4','m5','m6','m7','m8','m9','m10','m11','m12'],
+  budget:    ['id','company','year','code','m1','m2','m3','m4','m5','m6','m7','m8','m9','m10','m11','m12','ceh'],
+  // справочник цехов (подразделений)
+  cehs:      ['name','order'],
   // справочник статей бюджета: код, название, родительская группа
   codes:     ['code','name','ru','parent','order'],
   // журнал действий: кто, когда и что сделал
@@ -82,6 +85,7 @@ function doPost(e) {
       case 'changePassword': out = changePassword(p); break;
       case 'saveBudget':    out = saveBudget(p); break;
       case 'saveCodes':     out = saveCodes(p); break;
+      case 'saveCehs':      out = saveCehs(p); break;
       case 'saveProtocol':  out = saveProtocol(p); break;
       case 'deleteProtocol':out = deleteProtocol(p); break;
       case 'uploadDoc':     out = uploadDoc(p); break;
@@ -204,6 +208,7 @@ function bootstrap(withLog) {
   var budget    = readAll('budget');
   var protocols = readAll('protocols');
   var docs      = readAll('docs');
+  var cehs      = readAll('cehs').sort(function (a, b) { return (Number(a.order) || 0) - (Number(b.order) || 0); });
   var codes     = readAll('codes').sort(function (a, b) { return (Number(a.order) || 0) - (Number(b.order) || 0); });
   // журнал видит только администратор: в общий ответ он не попадает
   var log = null;
@@ -273,7 +278,7 @@ function bootstrap(withLog) {
   requests.forEach(function (r) { r.docs = byReq[r.id] || []; });
 
   return {contracts: contracts, requests: requests, signers: publicSigners,
-          budget: budget, protocols: protocols, log: log || undefined, codes: codes,
+          budget: budget, protocols: protocols, log: log || undefined, codes: codes, cehs: cehs,
           serverTime: new Date().toISOString()};
 }
 
@@ -288,13 +293,15 @@ function saveBudget(p) {
   if (!company) throw new Error('Ташкилот интихоб нашуд · не выбрана организация');
   if (!year) throw new Error('Сол нишон дода нашуд · не указан год');
 
+  // план хранится отдельно по цехам; пустой цех — общий план организации
+  var ceh = String(p.ceh || '').trim();
   var rows = readAll('budget');
   var keep = rows.filter(function (b) {
-    return !(String(b.company) === company && Number(b.year) === year);
+    return !(String(b.company) === company && Number(b.year) === year && String(b.ceh || '') === ceh);
   });
 
   var fresh = (p.rows || []).map(function (b) {
-    var o = {id: b.id || uid('b'), company: company, year: year, code: String(b.code || '')};
+    var o = {id: b.id || uid('b'), company: company, year: year, code: String(b.code || ''), ceh: ceh};
     for (var m = 1; m <= 12; m++) o['m' + m] = Number(b['m' + m]) || 0;
     return o;
   });
@@ -354,7 +361,10 @@ function describeAction(action, p) {
       case 'saveBudget':
         var sum = 0;
         (p.rows || []).forEach(function (b) { for (var m = 1; m <= 12; m++) sum += Number(b['m' + m]) || 0; });
-        return {object: 'Буҷет ' + (p.year || '') + ' · ' + (p.company || ''), details: 'нақша: ' + sum};
+        return {object: 'Буҷет ' + (p.year || '') + ' · ' + (p.company || '') + (p.ceh ? ' · ' + p.ceh : ''),
+                details: 'нақша: ' + sum};
+      case 'saveCehs':
+        return {object: 'Сехҳо · цеха', details: 'сехҳо: ' + ((p.cehs || []).length)};
       case 'saveCodes':
         return {object: 'Моддаҳои буҷет · статьи бюджета', details: 'моддаҳо: ' + ((p.codes || []).length)};
       case 'saveProtocol':
@@ -438,6 +448,33 @@ function saveCodes(p) {
   if (sh.getLastRow() > 1) sh.getRange(2, 1, sh.getLastRow() - 1, COLS.codes.length).clearContent();
   sh.getRange(2, 1, list.length, COLS.codes.length)
     .setValues(list.map(function (c) { return toRow('codes', c); }));
+  return {saved: list.length};
+}
+
+/* Справочник цехов. Цех, который уже стоит в заявке, контракте или плане,
+   удалить нельзя. */
+function saveCehs(p) {
+  auth(p);
+  var seen = {};
+  var list = (p.cehs || []).map(function (n) { return String(n || '').trim(); })
+    .filter(function (n) {
+      if (!n) return false;
+      var k = n.toLowerCase();
+      if (seen[k]) throw new Error('Сех такрор шуд · цех повторяется: ' + n);
+      seen[k] = true;
+      return true;
+    });
+  var used = {};
+  readAll('requests').forEach(function (r) { if (r.ceh) used[r.ceh] = 'дархост № ' + r.number; });
+  readAll('contracts').forEach(function (c) { if (c.ceh) used[c.ceh] = used[c.ceh] || 'шартнома № ' + c.no; });
+  readAll('budget').forEach(function (b) { if (b.ceh) used[b.ceh] = used[b.ceh] || 'нақшаи ' + b.year; });
+  readAll('cehs').forEach(function (c) {
+    if (!seen[String(c.name).toLowerCase()] && used[c.name])
+      throw new Error('Сехи «' + c.name + '» истифода мешавад (' + used[c.name] + ') · цех в работе, удалить нельзя');
+  });
+  var sh = sheet('cehs');
+  if (sh.getLastRow() > 1) sh.getRange(2, 1, sh.getLastRow() - 1, COLS.cehs.length).clearContent();
+  if (list.length) sh.getRange(2, 1, list.length, 2).setValues(list.map(function (n, i) { return [n, i + 1]; }));
   return {saved: list.length};
 }
 
@@ -655,7 +692,7 @@ function contractRow(c) {
     allocAmount: n(c.allocAmount), allocTjs: n(c.allocTjs),
     req2Rate: n(c.req2Rate), req2Amount: n(c.req2Amount), req2Tjs: n(c.req2Tjs),
     alloc2Rate: n(c.alloc2Rate), alloc2Amount: n(c.alloc2Amount), alloc2Tjs: n(c.alloc2Tjs),
-    allocTotal: n(c.allocTotal), code: c.code || '', protocolId: c.protocolId || ''
+    allocTotal: n(c.allocTotal), code: c.code || '', protocolId: c.protocolId || '', ceh: c.ceh || ''
   };
   var plan = c.plan || [];
   for (var i = 0; i < 3; i++) {
@@ -695,7 +732,7 @@ function saveRequest(p) {
     purpose: r.purpose || '', purposeShort: r.purposeShort || '',
     submittedAt: existing ? existing.submittedAt : '', paidAt: existing ? existing.paidAt : '',
     createdAt: existing ? existing.createdAt : new Date().toISOString(),
-    code: r.code || '', tranche: r.tranche || ''
+    code: r.code || '', tranche: r.tranche || '', ceh: r.ceh || ''
   });
 
   removeWhere('items', 'requestId', r.id);
