@@ -424,7 +424,9 @@ function renderGate(){
     ? '<label class="f" for="gU">Логин</label>'+
       '<input id="gU" autocomplete="username" placeholder="hakimov" value="'+esc(lsGet("avesto.lastLogin")||"")+'">'+
       '<label class="f" for="gP" style="margin-top:14px">Рамз · пароль</label>'+
-      '<input id="gP" type="password" autocomplete="current-password">'+
+      '<div class="pwrap"><input id="gP" type="password" autocomplete="current-password">'+
+      '<button type="button" class="eye" id="gEye" title="Рамзро нишон додан · показать пароль">👁</button></div>'+
+      '<p class="pwwarn" id="gWarn" hidden></p>'+
       '<button class="btn pri wide" id="gIn"'+(S.busy?" disabled":"")+">"+
       (S.busy?"Санҷиш…":"Даромадан · войти")+"</button>"
     : '<label class="f" for="gR">Вазифа · должность</label>'+
@@ -459,6 +461,22 @@ function wireGate(){
     (u.value?p:u).focus();
     var onKey=function(e){if(e.key==="Enter"){e.preventDefault();go.click();}};
     u.onkeydown=onKey; p.onkeydown=onKey;
+    /* Пароли латиницей: русская раскладка или Caps Lock — частая причина
+       «неверного пароля», предупреждаем до отправки. */
+    var warn=document.getElementById("gWarn");
+    var check=function(e){
+      var msg="";
+      if(/[а-яёӣҳқғҷӯ]/i.test(p.value))msg="Рамз бо ҳарфҳои кириллӣ навишта шуд — раскладка русская, переключите на английскую (EN).";
+      else if(e&&e.getModifierState&&e.getModifierState("CapsLock"))msg="Caps Lock фаъол аст · включён Caps Lock.";
+      warn.textContent=msg; warn.hidden=!msg;
+    };
+    p.addEventListener("keyup",check); p.addEventListener("input",function(){check();});
+    var eye=document.getElementById("gEye");
+    if(eye)eye.onclick=function(){
+      p.type=p.type==="password"?"text":"password";
+      eye.title=p.type==="password"?"Рамзро нишон додан · показать пароль":"Пинҳон кардан · скрыть пароль";
+      p.focus();
+    };
     go.onclick=function(){
       var lg=u.value.trim(),pw=p.value;
       if(!lg||!pw){S.gateErr="Логин ва рамзро ворид кунед · введите логин и пароль";render();return;}
